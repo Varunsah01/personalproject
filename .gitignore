@@ -1,0 +1,29 @@
+# Credentials
+.env
+*.pem
+*.key
+
+# Application data (CSV logs, browser state)
+data/applications_log.csv
+data/daily_summary.csv
+data/review_queue.csv
+data/skipped_log.csv
+data/browser_profiles/
+data/STOP
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Tools
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
