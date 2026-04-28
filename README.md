@@ -87,4 +87,108 @@ data/                 # Created at runtime, gitignored
 ```bash
 pytest
 ```
+
+## Scheduling
+
+### Linux / macOS (cron)
+
+7 PM IST = 13:30 UTC. The entry below runs Monday–Friday and mails you if the job fails.
+
+**Step 1 — open your crontab:**
+```bash
+crontab -e
+```
+
+**Step 2 — paste these lines** (adjust `BOTDIR` to your actual path):
+```cron
+MAILTO=varunsah@yahoo.com
+BOTDIR=/Users/varunsah/Code/Job Automation
+
+# Run the bot at 7 PM IST (13:30 UTC) on weekdays
+30 13 * * 1-5 cd "$BOTDIR" && /usr/bin/python3 apply.py --email-summary >> "$BOTDIR/data/cron.log" 2>&1
+
+# Email yesterday's summary at 7 PM IST if you want the digest without a full run
+# 30 13 * * 1-5 cd "$BOTDIR" && /usr/bin/python3 apply.py --email-summary-only >> "$BOTDIR/data/cron.log" 2>&1
+```
+
+`MAILTO` makes cron email you if the command exits non-zero. If your server doesn't have a local MTA, use the wrapper script below instead.
+
+**Step 3 — find the right Python path:**
+```bash
+which python3   # use this in the crontab if it differs from /usr/bin/python3
+```
+
+**Rotating the cron log** — add a `logrotate` config so the file doesn't grow unbounded:
+```bash
+# /etc/logrotate.d/job-bot  (or ~/logrotate.conf for a user-level setup)
+/path/to/job-bot/data/cron.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+}
+```
+
+Run manually with `logrotate -f ~/logrotate.conf` or let the system cron handle it.
+
+**Failure alert wrapper** — if `MAILTO` isn't available, use this instead of calling `apply.py` directly:
+
+```bash
+#!/usr/bin/env bash
+# save as job-bot/run_with_alert.sh, chmod +x
+set -euo pipefail
+BOTDIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$BOTDIR/data/cron.log"
+
+cd "$BOTDIR"
+if ! python3 apply.py --email-summary >> "$LOG" 2>&1; then
+    tail -n 40 "$LOG" | mail -s "job-bot FAILED on $(date +%Y-%m-%d)" varunsah@yahoo.com
+fi
+```
+
+Then reference the script in cron:
+```cron
+30 13 * * 1-5 /Users/varunsah/Code/Job\ Automation/run_with_alert.sh
+```
+
+---
+
+### Windows (Task Scheduler)
+
+Run this once in PowerShell (Admin) — adjust `$botDir` and the Python path:
+
+```powershell
+$botDir   = "C:\path\to\job-bot"
+$python   = "C:\Users\YourName\AppData\Local\Programs\Python\Python312\python.exe"
+$logFile  = "$botDir\data\cron.log"
+
+$action   = New-ScheduledTaskAction `
+    -Execute $python `
+    -Argument "apply.py --email-summary >> `"$logFile`" 2>&1" `
+    -WorkingDirectory $botDir
+
+# 7 PM IST = 19:00 in your local timezone if Windows clock is set to IST
+$trigger  = New-ScheduledTaskTrigger `
+    -Weekly `
+    -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday `
+    -At "7:00PM"
+
+$settings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 3) `
+    -RestartCount 0 `
+    -StartWhenAvailable
+
+Register-ScheduledTask `
+    -TaskName   "job-bot-daily" `
+    -Action     $action `
+    -Trigger    $trigger `
+    -Settings   $settings `
+    -RunLevel   Highest `
+    -Force
+```
+
+To check runs: **Task Scheduler → Task Scheduler Library → job-bot-daily → History tab**.
+
+To remove: `Unregister-ScheduledTask -TaskName "job-bot-daily" -Confirm:$false`
 # personalproject

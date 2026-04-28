@@ -23,6 +23,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from core.logger import count_today, init_log, read_log
+from core.notifier import build_smtp_config, send_digest
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ LOG_PATH = Path(os.getenv("LOG_FILE", "data/applications_log.csv"))
 SUMMARY_PATH = Path(os.getenv("SUMMARY_FILE", "data/daily_summary.csv"))
 RESUME_PATH = Path("Varun_Sah_CV.pdf")
 STOP_FILE = Path("data/STOP")
+QUEUE_PATH = Path("data/review_queue.csv")
 
 MIN_FREE_DISK_MB = 500          # guidelines.md §6
 RESUME_MAX_AGE_DAYS = 60        # guidelines.md §3.1
@@ -383,8 +385,16 @@ async def _run_async(args: argparse.Namespace) -> None:
     _write_summary(stats, runtime, SUMMARY_PATH)
     _print_summary(stats, runtime, skipped_platforms)
 
-    if args.email_summary_only or getattr(args, "email_summary", False):
-        logger.info("Email digest requested — not yet implemented (build step 9)")
+    if getattr(args, "email_summary", False):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        send_digest(
+            date=today,
+            log_path=LOG_PATH,
+            summary_path=SUMMARY_PATH,
+            queue_path=QUEUE_PATH,
+            smtp_config=build_smtp_config(),
+            print_only=getattr(args, "dry_email", False),
+        )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -439,6 +449,16 @@ def parse_args() -> argparse.Namespace:
         help="Email yesterday's summary only; don't run the bot",
     )
     parser.add_argument(
+        "--email-summary",
+        action="store_true",
+        help="Send the digest email after the run completes",
+    )
+    parser.add_argument(
+        "--dry-email",
+        action="store_true",
+        help="Print the email body to stdout instead of sending (safe to run before adding SMTP creds)",
+    )
+    parser.add_argument(
         "--review-queue",
         action="store_true",
         help="Interactive review of Yellow-tier queue",
@@ -458,9 +478,16 @@ def run(args: argparse.Namespace) -> None:
         print("Review queue handler not implemented yet.")
         return
 
-    # Email-only: stub until build step 9
     if args.email_summary_only:
-        print("Email summary-only mode not implemented yet.")
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        send_digest(
+            date=yesterday,
+            log_path=LOG_PATH,
+            summary_path=SUMMARY_PATH,
+            queue_path=QUEUE_PATH,
+            smtp_config=build_smtp_config(),
+            print_only=args.dry_email,
+        )
         return
 
     asyncio.run(_run_async(args))
