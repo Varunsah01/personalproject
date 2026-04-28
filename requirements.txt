@@ -6,3 +6,5 @@ python-dotenv>=1.0
 
 # Test runner — scoring logic, dedupe, CSV writes have unit tests
 pytest>=8.0
+# Async test support for platform orchestration smoke tests
+pytest-asyncio>=0.23

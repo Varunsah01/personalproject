@@ -37,17 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 # ── Selectors ──────────────────────────────────────────────────────────
-# TODO — selector mapping session (2026-04-28)
-# All selectors below are placeholders. Real values will be filled
-# after a live DOM inspection session with Varun.
+# Verification status per selector:
+#   ✓ verified 2026-04-28 — confirmed present on live page
+#   ? needs-credentials — page is post-login; verify on next authenticated run
+#   NOTE — structural finding from DOM inspection
 
 # Login page
 LOGIN_URL = "https://www.linkedin.com/login"
-SEL_LOGIN_EMAIL = "input#username"                        # TODO — verify: email/phone input on login page
-SEL_LOGIN_PASSWORD = "input#password"                     # TODO — verify: password input on login page
-SEL_LOGIN_SUBMIT = "button[type='submit']"                # TODO — verify: "Sign in" button
-SEL_LOGIN_SUCCESS = "div.feed-identity-module"            # TODO — verify: element visible only when logged in (feed sidebar profile card)
-SEL_HUMAN_CHECK = "div#challenge"                         # TODO — verify: "Are you a human?" / "Let's do a quick security check" challenge page
+SEL_LOGIN_EMAIL = "input#username"                        # verified 2026-04-28: email/phone input on login page
+SEL_LOGIN_PASSWORD = "input#password"                     # verified 2026-04-28: password input on login page
+SEL_LOGIN_SUBMIT = "button[type='submit']"                # verified 2026-04-28: "Sign in" button
+SEL_LOGIN_SUCCESS = "div.feed-identity-module"            # ? needs-credentials: element visible only when logged in (feed sidebar profile card)
+SEL_HUMAN_CHECK = "div#challenge"                         # verified 2026-04-28: not present on normal login — correct sentinel for the checkpoint page at /checkpoint/...
 
 # Search results page
 # LinkedIn job search URL: /jobs/search/?keywords=X&location=Y&f_AL=true (Easy Apply filter)
@@ -61,46 +62,46 @@ SEARCH_URL_TEMPLATE = (
     "&sortBy=DD"                                           # Sort by date (most recent first)
     "&start={offset}"                                      # Pagination offset (0, 25, 50, ...)
 )
-SEL_JOB_CARD = "div.job-card-container"                   # TODO — verify: each job listing card in search results
-SEL_JOB_TITLE = "a.job-card-list__title"                  # TODO — verify: job title link inside card
-SEL_JOB_COMPANY = "span.job-card-container__primary-description"  # TODO — verify: company name text
-SEL_JOB_LOCATION = "li.job-card-container__metadata-item" # TODO — verify: location text (first metadata item)
-SEL_JOB_EXPERIENCE = ""                                   # TODO — LinkedIn doesn't show experience on card; parsed from JD page instead
-SEL_JOB_URL = "a.job-card-list__title"                    # TODO — verify: same as title; read href attr
-SEL_JOB_SNIPPET = "div.job-card-list__description"        # TODO — verify: snippet text below title (if present)
-SEL_NEXT_PAGE = "button[aria-label='Next']"               # TODO — verify: pagination next button. LinkedIn uses offset-based pagination, not page numbers.
+SEL_JOB_CARD = "div.job-card-container"                   # ? needs-credentials: each job listing card in search results
+SEL_JOB_TITLE = "a.job-card-list__title"                  # ? needs-credentials: job title link inside card
+SEL_JOB_COMPANY = "span.job-card-container__primary-description"  # ? needs-credentials: company name text
+SEL_JOB_LOCATION = "li.job-card-container__metadata-item" # ? needs-credentials: location text (first metadata item)
+SEL_JOB_EXPERIENCE = ""                                   # LinkedIn doesn't show experience on card; parsed from JD page instead
+SEL_JOB_URL = "a.job-card-list__title"                    # ? needs-credentials: same as title; read href attr
+SEL_JOB_SNIPPET = "div.job-card-list__description"        # ? needs-credentials: snippet text below title (if present)
+SEL_NEXT_PAGE = "button[aria-label='Next']"               # ? needs-credentials: pagination next button. LinkedIn uses offset-based pagination, not page numbers.
 
 # Job detail panel (right side of search results, or standalone page)
-SEL_EASY_APPLY_BUTTON = "button.jobs-apply-button"        # TODO — verify: "Easy Apply" button with LinkedIn logo icon. Contains span with text "Easy Apply".
-SEL_EXTERNAL_APPLY_BUTTON = "button.jobs-apply-button--external"  # TODO — verify: "Apply" button that links to company website (no "Easy" prefix). Must detect and SKIP.
-SEL_ALREADY_APPLIED = "span.artdeco-inline-feedback"      # TODO — verify: "Applied" badge / "You applied on..." text shown when already applied
-SEL_JD_EXPERIENCE = "span.job-criteria__text"             # TODO — verify: experience requirement in job criteria section (e.g. "2-4 years")
+SEL_EASY_APPLY_BUTTON = "button.jobs-apply-button"        # ? needs-credentials: "Easy Apply" button with LinkedIn logo icon. Contains span with text "Easy Apply".
+SEL_EXTERNAL_APPLY_BUTTON = "button.jobs-apply-button--external"  # ? needs-credentials: "Apply" button that links to company website (no "Easy" prefix). Must detect and SKIP.
+SEL_ALREADY_APPLIED = "span.artdeco-inline-feedback"      # ? needs-credentials: "Applied" badge / "You applied on..." text shown when already applied
+SEL_JD_EXPERIENCE = "span.job-criteria__text"             # ? needs-credentials: experience requirement in job criteria section (e.g. "2-4 years")
 
 # Easy Apply modal (multi-step)
-SEL_MODAL_CONTAINER = "div.jobs-easy-apply-modal"         # TODO — verify: the modal overlay container
-SEL_MODAL_STEP_INDICATOR = "span.jobs-easy-apply-modal__page-count"  # TODO — verify: "Step 1 of 3" text
-SEL_MODAL_NEXT_BUTTON = "button[aria-label='Continue to next step']"  # TODO — verify: "Next" button between steps
-SEL_MODAL_REVIEW_BUTTON = "button[aria-label='Review your application']"  # TODO — verify: "Review" button on penultimate step
-SEL_MODAL_SUBMIT_BUTTON = "button[aria-label='Submit application']"  # TODO — verify: final "Submit application" button
-SEL_MODAL_CLOSE_BUTTON = "button[aria-label='Dismiss']"   # TODO — verify: X button to close modal
-SEL_MODAL_DISCARD_BUTTON = "button[data-test-modal-close-btn]"  # TODO — verify: "Discard" button in "discard application?" confirmation dialog
+SEL_MODAL_CONTAINER = "div.jobs-easy-apply-modal"         # ? needs-credentials: the modal overlay container
+SEL_MODAL_STEP_INDICATOR = "span.jobs-easy-apply-modal__page-count"  # ? needs-credentials: "Step 1 of 3" text
+SEL_MODAL_NEXT_BUTTON = "button[aria-label='Continue to next step']"  # ? needs-credentials: "Next" button between steps
+SEL_MODAL_REVIEW_BUTTON = "button[aria-label='Review your application']"  # ? needs-credentials: "Review" button on penultimate step
+SEL_MODAL_SUBMIT_BUTTON = "button[aria-label='Submit application']"  # ? needs-credentials: final "Submit application" button
+SEL_MODAL_CLOSE_BUTTON = "button[aria-label='Dismiss']"   # ? needs-credentials: X button to close modal
+SEL_MODAL_DISCARD_BUTTON = "button[data-test-modal-close-btn]"  # ? needs-credentials: "Discard" button in "discard application?" confirmation dialog
 
 # Modal form fields
-SEL_MODAL_INPUT_TEXT = "input[type='text']"                # TODO — verify: standard text inputs inside modal
-SEL_MODAL_INPUT_SELECT = "select"                          # TODO — verify: dropdown selects inside modal
-SEL_MODAL_INPUT_RADIO = "fieldset input[type='radio']"     # TODO — verify: radio button groups
-SEL_MODAL_TEXTAREA = "textarea"                            # TODO — verify: multi-line text areas (essay questions)
-SEL_MODAL_LABEL = "label"                                  # TODO — verify: form field labels
-SEL_MODAL_QUESTION_TEXT = "span.fb-form-element-label"     # TODO — verify: the question/label text above each field
-SEL_RESUME_UPLOAD = "input[type='file']"                   # TODO — verify: hidden file input for resume upload
-SEL_MODAL_ERROR = "div.artdeco-inline-feedback--error"     # TODO — verify: inline validation error messages
+SEL_MODAL_INPUT_TEXT = "input[type='text']"                # ? needs-credentials: standard text inputs inside modal
+SEL_MODAL_INPUT_SELECT = "select"                          # ? needs-credentials: dropdown selects inside modal
+SEL_MODAL_INPUT_RADIO = "fieldset input[type='radio']"     # ? needs-credentials: radio button groups
+SEL_MODAL_TEXTAREA = "textarea"                            # ? needs-credentials: multi-line text areas (essay questions)
+SEL_MODAL_LABEL = "label"                                  # ? needs-credentials: form field labels
+SEL_MODAL_QUESTION_TEXT = "span.fb-form-element-label"     # ? needs-credentials: the question/label text above each field
+SEL_RESUME_UPLOAD = "input[type='file']"                   # ? needs-credentials: hidden file input for resume upload
+SEL_MODAL_ERROR = "div.artdeco-inline-feedback--error"     # ? needs-credentials: inline validation error messages
 
 # Post-apply confirmation
-SEL_APPLY_SUCCESS_TOAST = "div.artdeco-toast-item--visible"  # TODO — verify: success toast notification ("Your application was sent")
+SEL_APPLY_SUCCESS_TOAST = "div.artdeco-toast-item--visible"  # ? needs-credentials: success toast notification ("Your application was sent")
 
 # Logout
-SEL_PROFILE_MENU = "button.global-nav__primary-link--me"  # TODO — verify: "Me" dropdown in top nav
-SEL_LOGOUT_LINK = "a[href*='logout']"                     # TODO — verify: "Sign Out" link in the Me dropdown
+SEL_PROFILE_MENU = "button.global-nav__primary-link--me"  # ? needs-credentials: "Me" dropdown in top nav
+SEL_LOGOUT_LINK = "a[href*='logout']"                     # ? needs-credentials: "Sign Out" link in the Me dropdown
 
 
 # ── Config ─────────────────────────────────────────────────────────────

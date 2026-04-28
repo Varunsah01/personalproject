@@ -44,20 +44,32 @@ logger = logging.getLogger(__name__)
 
 
 # ── Selectors ──────────────────────────────────────────────────────────
-# TODO — selector mapping session (2026-04-28)
-# All selectors below are placeholders. Real values will be filled
-# after a live DOM inspection session with Varun.
+# Verification status 2026-04-28:
+#   BLOCKER — Wellfound's login page renders completely blank under Playwright
+#   (even with --disable-blink-features=AutomationControlled + webdriver mask).
+#   This is Kasada or similar advanced bot protection. The login page DOM
+#   inspection script returned 0 forms, 0 inputs, 0 buttons — the JS bundle
+#   never executes for detected bots.
+#
+#   Recommended approach: manually log in once in the persistent profile browser
+#   (headless=False, profile at data/browser_profiles/wellfound/) and let the
+#   session cookies carry subsequent headless runs. After manual login, run a
+#   single --dry-run to verify all selectors with an active session.
+#
+#   Selectors marked "? needs-credentials" were NOT reachable during the
+#   2026-04-28 inspection due to bot protection. They are best-guess values
+#   based on Wellfound's React data-test attribute conventions.
 
 # Login page
 LOGIN_URL = "https://wellfound.com/login"
-SEL_LOGIN_EMAIL = "input[name='user[email]']"               # TODO — verify: email input on login page
-SEL_LOGIN_PASSWORD = "input[name='user[password]']"         # TODO — verify: password input on login page
-SEL_LOGIN_SUBMIT = "button[type='submit']"                   # TODO — verify: "Sign in" / "Log in" button
-SEL_LOGIN_SUCCESS = "a[href*='/me']"                         # TODO — verify: element only visible when logged in (e.g. profile nav link)
+SEL_LOGIN_EMAIL = "input[name='user[email]']"               # ? needs-credentials: bot protection blocked inspection — best-guess name attr from prior Wellfound builds
+SEL_LOGIN_PASSWORD = "input[name='user[password]']"         # ? needs-credentials: same caveat
+SEL_LOGIN_SUBMIT = "button[type='submit']"                   # ? needs-credentials: same caveat
+SEL_LOGIN_SUCCESS = "a[href*='/me']"                         # ? needs-credentials: element only visible when logged in (profile nav link)
 
 # Profile completeness (checked immediately after login)
 PROFILE_URL = "https://wellfound.com/profile/edit"
-SEL_PROFILE_COMPLETENESS = "div.profile-completeness"        # TODO — verify: element showing completeness % (e.g. "82% complete" or a progress bar with aria-valuenow)
+SEL_PROFILE_COMPLETENESS = "div.profile-completeness"        # ? needs-credentials: element showing completeness % (progress bar or text like "82% complete")
 
 # Search results page
 SEARCH_URL_TEMPLATE = (
@@ -66,31 +78,31 @@ SEARCH_URL_TEMPLATE = (
     "&l={location}"
     "&page={page}"
 )
-SEL_JOB_CARD = "div[data-test='StartupResult']"              # TODO — verify: each job listing card in search results
-SEL_JOB_TITLE = "a[data-test='job-title']"                   # TODO — verify: job title link inside card
-SEL_JOB_COMPANY = "a[data-test='startup-link']"              # TODO — verify: company name/link
-SEL_JOB_LOCATION = "span[data-test='location']"              # TODO — verify: location text
-SEL_JOB_EXPERIENCE = "span[data-test='job-type']"            # TODO — verify: experience/type text (may not exist per-card)
-SEL_JOB_URL = "a[data-test='job-title']"                     # TODO — verify: same as title; read href attr
-SEL_JOB_SNIPPET = "p[data-test='job-description']"           # TODO — verify: short JD snippet on card
-SEL_NEXT_PAGE = "a[rel='next']"                              # TODO — verify: next page link or load-more button
+SEL_JOB_CARD = "div[data-test='StartupResult']"              # ? needs-credentials: each job listing card — data-test='StartupResult' is a known Wellfound pattern
+SEL_JOB_TITLE = "a[data-test='job-title']"                   # ? needs-credentials: job title link inside card
+SEL_JOB_COMPANY = "a[data-test='startup-link']"              # ? needs-credentials: company name/link
+SEL_JOB_LOCATION = "span[data-test='location']"              # ? needs-credentials: location text
+SEL_JOB_EXPERIENCE = "span[data-test='job-type']"            # ? needs-credentials: experience/type text (may not exist per-card)
+SEL_JOB_URL = "a[data-test='job-title']"                     # ? needs-credentials: same as title; read href attr
+SEL_JOB_SNIPPET = "p[data-test='job-description']"           # ? needs-credentials: short JD snippet on card
+SEL_NEXT_PAGE = "a[rel='next']"                              # ? needs-credentials: next page link or load-more button
 
 # Job detail / apply flow
-SEL_APPLY_BUTTON = "button[data-test='apply-button']"        # TODO — verify: "Apply" button on job detail page
-SEL_EXTERNAL_APPLY_INDICATOR = "a[data-test='external-apply']"  # TODO — verify: link/button that redirects to company site instead of Wellfound modal
-SEL_ALREADY_APPLIED = "span[data-test='applied-badge']"      # TODO — verify: "Applied" badge when already applied to this role
-SEL_APPLY_MODAL = "div[data-test='apply-modal']"             # TODO — verify: the apply form container/modal
-SEL_MODAL_CLOSE = "button[data-test='close-modal']"          # TODO — verify: X / close button on the modal
+SEL_APPLY_BUTTON = "button[data-test='apply-button']"        # ? needs-credentials: "Apply" button on job detail page
+SEL_EXTERNAL_APPLY_INDICATOR = "a[data-test='external-apply']"  # ? needs-credentials: link/button that redirects to company site instead of Wellfound modal
+SEL_ALREADY_APPLIED = "span[data-test='applied-badge']"      # ? needs-credentials: "Applied" badge when already applied to this role
+SEL_APPLY_MODAL = "div[data-test='apply-modal']"             # ? needs-credentials: the apply form container/modal
+SEL_MODAL_CLOSE = "button[data-test='close-modal']"          # ? needs-credentials: X / close button on the modal
 
 # Modal form fields
-SEL_WHY_TEXTAREA = "textarea[name*='why'], textarea[placeholder*='why'], textarea[data-test*='why']"  # TODO — verify: the "Why do you want to work here?" textarea. Multiple candidate selectors listed because this field name varies. The real one needs DOM inspection.
-SEL_MODAL_INPUT_TEXT = "input[type='text']"                  # TODO — verify: standard text inputs inside the apply modal
-SEL_MODAL_LABEL = "label"                                    # TODO — verify: field labels inside modal
-SEL_RESUME_UPLOAD = "input[type='file']"                     # TODO — verify: hidden file input for resume upload
-SEL_MODAL_SUBMIT = "button[data-test='submit-application']"  # TODO — verify: "Send Application" / "Submit" button in modal
+SEL_WHY_TEXTAREA = "textarea[name*='why'], textarea[placeholder*='why'], textarea[data-test*='why']"  # ? needs-credentials: "Why do you want to work here?" textarea — name attr varies; multiple candidates listed
+SEL_MODAL_INPUT_TEXT = "input[type='text']"                  # ? needs-credentials: standard text inputs inside the apply modal
+SEL_MODAL_LABEL = "label"                                    # ? needs-credentials: field labels inside modal
+SEL_RESUME_UPLOAD = "input[type='file']"                     # ? needs-credentials: hidden file input for resume upload
+SEL_MODAL_SUBMIT = "button[data-test='submit-application']"  # ? needs-credentials: "Send Application" / "Submit" button in modal
 
 # Post-apply confirmation
-SEL_APPLY_SUCCESS = "div[data-test='application-sent']"      # TODO — verify: success message / toast shown after successful submission
+SEL_APPLY_SUCCESS = "div[data-test='application-sent']"      # ? needs-credentials: success message / toast shown after successful submission
 
 
 # ── Config ─────────────────────────────────────────────────────────────

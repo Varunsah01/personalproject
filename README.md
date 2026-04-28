@@ -154,6 +154,95 @@ Then reference the script in cron:
 
 ---
 
+### 9 AM IST daily run (current live schedule)
+
+The bot runs every day at **9:00 AM IST (03:30 UTC)** via `scripts/run_daily.sh`.
+The script finds the project root, activates `.venv` if present, and writes
+output to a dated file at `data/logs/YYYY-MM-DD.log`.
+
+**Crontab entry** — paste this with `crontab -e`:
+
+```cron
+# job-bot: run every day at 9 AM IST (03:30 UTC)
+30 3 * * * /Users/varunsah/Code/Job\ Automation/scripts/run_daily.sh
+```
+
+> macOS cron requires the full absolute path — no `~`, no env-var expansion in
+> the command field. The backslash-escaped space in the path is correct.
+
+**Verify the entry was saved:**
+```bash
+crontab -l | grep job-bot
+```
+
+**Test the script manually before trusting cron:**
+```bash
+bash /Users/varunsah/Code/Job\ Automation/scripts/run_daily.sh
+# Check output
+cat data/logs/$(date +%Y-%m-%d).log
+```
+
+---
+
+### macOS launchd alternative (recommended over cron on macOS)
+
+`launchd` is the macOS-native scheduler. Unlike cron it survives sleep/wake
+cycles and is visible in Console.app. Save the plist below, then load it once.
+
+**`~/Library/LaunchAgents/com.varunsah.job-bot.plist`:**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.varunsah.job-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/varunsah/Code/Job Automation/scripts/run_daily.sh</string>
+    </array>
+
+    <!-- 9:00 AM local time (set your Mac clock to IST / Asia/Kolkata) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>    <integer>9</integer>
+        <key>Minute</key>  <integer>0</integer>
+    </dict>
+
+    <!-- launchd captures any output the script doesn't redirect itself -->
+    <key>StandardOutPath</key>
+    <string>/Users/varunsah/Code/Job Automation/data/logs/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/varunsah/Code/Job Automation/data/logs/launchd.log</string>
+
+    <key>RunAtLoad</key>  <false/>
+</dict>
+</plist>
+```
+
+**Install and start:**
+```bash
+cp com.varunsah.job-bot.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.varunsah.job-bot.plist
+launchctl list | grep job-bot   # confirm it registered
+```
+
+**Run immediately to test (without waiting for 9 AM):**
+```bash
+launchctl start com.varunsah.job-bot
+```
+
+**Unload / disable:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.varunsah.job-bot.plist
+```
+
+---
+
 ### Windows (Task Scheduler)
 
 Run this once in PowerShell (Admin) — adjust `$botDir` and the Python path:

@@ -89,14 +89,43 @@ CUTSHORT_DOMAIN = "cutshort.io"
 
 
 # ── Selectors ──────────────────────────────────────────────────────────
-# TODO — selector mapping session (2026-04-28)
+# CRITICAL FINDING 2026-04-28 — email/password login removed from Cutshort
+# ─────────────────────────────────────────────────────────────────────────
+# Live DOM inspection (headless=False, anti-detection context) confirmed that
+# Cutshort's login flow no longer has an email/password form. The /login URL
+# redirects to the home page. Clicking "Candidate login" opens a modal with:
+#   • "Signup or login with Google"  (OAuth)
+#   • "Login using phone"            (SMS OTP)
+# No email/password inputs exist.
+#
+# IMPACT: the current login() method cannot log in automatically. It will
+# always fail the _is_logged_in() check and skip the platform.
+#
+# RECOMMENDED WORKAROUND: persistent session approach.
+#   1. Run once with headless=False (python apply.py --platform cutshort --dry-run
+#      after temporarily setting HEADLESS=false).
+#   2. Click "Signup or login with Google" or "Login using phone" manually.
+#   3. Once logged in, close the browser. The session is saved to the
+#      persistent profile at data/browser_profiles/cutshort/.
+#   4. Future runs reuse the saved session and skip the login form entirely
+#      (the _is_logged_in() guard will see a valid session and return True).
+#
+# The selectors below for SEL_LOGIN_EMAIL, SEL_LOGIN_PASSWORD, SEL_LOGIN_SUBMIT
+# are kept as a no-op — the login() method tries them, times out gracefully,
+# and then checks the persistent session. If the session is valid, the run
+# proceeds. If not, it logs auth_failed and skips the platform for the day.
 
 # Login page
-LOGIN_URL = "https://cutshort.io/login"
-SEL_LOGIN_EMAIL = "input[type='email']"                     # TODO — verify: email input on login page
-SEL_LOGIN_PASSWORD = "input[type='password']"               # TODO — verify: password input
-SEL_LOGIN_SUBMIT = "button[type='submit']"                  # TODO — verify: "Sign in" button
-SEL_LOGIN_SUCCESS = "a[href*='/profile']"                   # TODO — verify: element only visible when logged in (e.g. profile nav link or avatar)
+LOGIN_URL = "https://cutshort.io/"                          # verified 2026-04-28: /login redirects to / — use home page
+SEL_LOGIN_GOOGLE = "button:has-text('Signup or login with Google')"  # verified 2026-04-28: Google OAuth button in login modal
+SEL_LOGIN_PHONE = "button[label='Login using phone']"       # verified 2026-04-28: phone OTP button in login modal
+SEL_CANDIDATE_LOGIN_BTN = "button:has-text('Candidate login')"  # verified 2026-04-28: button on home page that opens the login modal
+# Legacy email/password selectors — these fields DO NOT EXIST on Cutshort as of 2026-04-28.
+# Kept so login() gracefully times out and falls through to the persistent-session check.
+SEL_LOGIN_EMAIL = "input[type='email']"                     # DOES NOT EXIST — email login removed; kept as no-op
+SEL_LOGIN_PASSWORD = "input[type='password']"               # DOES NOT EXIST — email login removed; kept as no-op
+SEL_LOGIN_SUBMIT = "button[type='submit']"                  # DOES NOT EXIST — email login removed; kept as no-op
+SEL_LOGIN_SUCCESS = "a[href*='/profile']"                   # ? needs-credentials: element only visible when logged in (profile nav link)
 
 # Search results (tag-based)
 # Cutshort search by tag: /jobs?tags[]=growth-manager&locations[]=Delhi
@@ -106,27 +135,31 @@ SEARCH_URL_TEMPLATE = (
     "&locations[]={location}"
     "&page={page}"
 )
-SEL_JOB_CARD = "div[data-test='job-card']"                  # TODO — verify: each job card in search results
-SEL_JOB_TITLE = "a[data-test='job-title']"                  # TODO — verify: job title link
-SEL_JOB_COMPANY = "span[data-test='company-name']"          # TODO — verify: company name text
-SEL_JOB_LOCATION = "span[data-test='job-location']"         # TODO — verify: location text
-SEL_JOB_EXPERIENCE = "span[data-test='experience']"         # TODO — verify: experience range text
-SEL_JOB_URL = "a[data-test='job-title']"                    # TODO — verify: same as title; read href attr
-SEL_JOB_SNIPPET = "p[data-test='job-description']"          # TODO — verify: JD snippet on card
-SEL_NEXT_PAGE = "a[rel='next'], button[data-test='next-page']"  # TODO — verify: pagination next
+# NOTE 2026-04-28: Cutshort uses Styled-Components with obfuscated class names
+# (e.g. "sc-8c2323fe-0 hwKSIH"). The data-test attribute approach below is the
+# correct strategy but needs verification against a logged-in session to confirm
+# Cutshort actually uses data-test attributes on their job cards and apply flow.
+SEL_JOB_CARD = "div[data-test='job-card']"                  # ? needs-credentials: each job card in search results — data-test attr unconfirmed
+SEL_JOB_TITLE = "a[data-test='job-title']"                  # ? needs-credentials: job title link — unconfirmed
+SEL_JOB_COMPANY = "span[data-test='company-name']"          # ? needs-credentials: company name text — unconfirmed
+SEL_JOB_LOCATION = "span[data-test='job-location']"         # ? needs-credentials: location text — unconfirmed
+SEL_JOB_EXPERIENCE = "span[data-test='experience']"         # ? needs-credentials: experience range text — unconfirmed
+SEL_JOB_URL = "a[data-test='job-title']"                    # ? needs-credentials: same as title; read href attr — unconfirmed
+SEL_JOB_SNIPPET = "p[data-test='job-description']"          # ? needs-credentials: JD snippet on card — unconfirmed
+SEL_NEXT_PAGE = "a[rel='next'], button[data-test='next-page']"  # ? needs-credentials: pagination next — unconfirmed
 
 # Job detail / apply flow
-SEL_APPLY_BUTTON = "button[data-test='apply-button'], a[data-test='apply-button']"  # TODO — verify: Apply button. May be <button> or <a> depending on whether it's Easy Apply or external.
-SEL_ALREADY_APPLIED = "span[data-test='applied-status']"    # TODO — verify: "Applied" badge/text
-SEL_APPLY_SUCCESS = "div[data-test='application-success']"  # TODO — verify: success state after single-click apply
+SEL_APPLY_BUTTON = "button[data-test='apply-button'], a[data-test='apply-button']"  # ? needs-credentials: Apply button — unconfirmed
+SEL_ALREADY_APPLIED = "span[data-test='applied-status']"    # ? needs-credentials: "Applied" badge/text — unconfirmed
+SEL_APPLY_SUCCESS = "div[data-test='application-success']"  # ? needs-credentials: success state after single-click apply — unconfirmed
 
 # Minimal form (appears on some Cutshort jobs after clicking Apply)
-SEL_APPLY_FORM = "form[data-test='apply-form'], div[data-test='apply-modal']"  # TODO — verify: form container if extra fields are requested
-SEL_FORM_INPUT_TEXT = "input[type='text']"                  # TODO — verify: text inputs inside the form
-SEL_FORM_LABEL = "label"                                    # TODO — verify: field labels
-SEL_FORM_TEXTAREA = "textarea"                              # TODO — verify: textarea (custom question — auto-Yellow)
-SEL_RESUME_UPLOAD = "input[type='file']"                    # TODO — verify: resume file input
-SEL_FORM_SUBMIT = "button[type='submit'], button[data-test='submit-application']"  # TODO — verify: submit button in the form
+SEL_APPLY_FORM = "form[data-test='apply-form'], div[data-test='apply-modal']"  # ? needs-credentials: form container — unconfirmed
+SEL_FORM_INPUT_TEXT = "input[type='text']"                  # ? needs-credentials: text inputs inside the form
+SEL_FORM_LABEL = "label"                                    # ? needs-credentials: field labels
+SEL_FORM_TEXTAREA = "textarea"                              # ? needs-credentials: textarea (custom question — auto-Yellow)
+SEL_RESUME_UPLOAD = "input[type='file']"                    # ? needs-credentials: resume file input
+SEL_FORM_SUBMIT = "button[type='submit'], button[data-test='submit-application']"  # ? needs-credentials: submit button
 
 
 # ── Config ─────────────────────────────────────────────────────────────
@@ -230,19 +263,24 @@ class CutshortPlatform(BasePlatform):
     # ── BasePlatform interface ─────────────────────────────────────────
 
     async def login(self) -> bool:
-        """Log into Cutshort using .env credentials.
+        """Log into Cutshort via persistent session (email/password no longer exists).
 
-        Uses persistent browser profile so subsequent runs may already
-        be logged in (cookie-based session).
+        As of 2026-04-28 Cutshort removed email/password login. The only
+        options are Google OAuth and phone OTP — neither is automatable.
+        This method ONLY checks for an existing logged-in session in the
+        persistent browser profile. If none is found, it logs a clear
+        error instructing the user to seed the session manually and returns
+        False so the platform is skipped for the day.
+
+        To seed the session:
+            HEADLESS=false python apply.py --platform cutshort --dry-run
+        Then log in via Google or phone in the browser window that opens.
+        Subsequent runs (including headless) will reuse the saved cookies.
 
         Returns:
-            True if login succeeded, False otherwise.
+            True if a valid session was found in the persistent profile.
+            False if no session found (user must log in manually first).
         """
-        if not self.email or not self.password:
-            logger.error("CUTSHORT_EMAIL or CUTSHORT_PASSWORD not set in .env")
-            self._log_error("auth_failed: missing credentials")
-            return False
-
         from playwright.async_api import async_playwright
         self._playwright = await async_playwright().start()
         self._context = await create_browser_context(
@@ -253,28 +291,21 @@ class CutshortPlatform(BasePlatform):
         self._page = await self._context.new_page()
 
         await self._page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        await asyncio.sleep(2)
 
         if await self._is_logged_in():
-            logger.info("Already logged in via persistent session")
+            logger.info("Cutshort: existing session found — proceeding")
             return True
 
-        try:
-            await self._page.fill(SEL_LOGIN_EMAIL, self.email)
-            await human_type(self._page, SEL_LOGIN_PASSWORD, self.password)
-            await self._page.click(SEL_LOGIN_SUBMIT)
-            await self._page.wait_for_load_state("networkidle", timeout=15_000)
-        except PlaywrightTimeout:
-            logger.error("Login form interaction timed out")
-            self._log_error("auth_failed: timeout")
-            return False
-
-        if not await self._is_logged_in():
-            logger.error("Login failed — success indicator not found")
-            self._log_error("auth_failed: credentials rejected or unknown error")
-            return False
-
-        logger.info("Cutshort login successful")
-        return True
+        logger.error(
+            "Cutshort: no active session found. "
+            "Email/password login was removed from Cutshort (2026-04-28). "
+            "To seed the session: set HEADLESS=false and run "
+            "'python apply.py --platform cutshort --dry-run', "
+            "then log in via Google or phone in the browser window."
+        )
+        self._log_error("auth_failed: no persistent session — seed required (see logs)")
+        return False
 
     @staticmethod
     def _tags_for_keyword(keyword: str) -> list[str]:
