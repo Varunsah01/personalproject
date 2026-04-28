@@ -3,13 +3,11 @@
 *.pem
 *.key
 
+# Resume (contains PII, tracked outside git)
+Varun_Sah_CV.pdf
+
 # Application data (CSV logs, browser state)
-data/applications_log.csv
-data/daily_summary.csv
-data/review_queue.csv
-data/skipped_log.csv
-data/browser_profiles/
-data/STOP
+data/
 
 # Python
 __pycache__/

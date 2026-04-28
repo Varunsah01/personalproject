@@ -1,3 +1,8 @@
+# Browser automation — drives Chrome for login, search, apply flows
 playwright>=1.44
+
+# Loads .env credentials and config without touching the shell environment
 python-dotenv>=1.0
-rich>=13.0
+
+# Test runner — scoring logic, dedupe, CSV writes have unit tests
+pytest>=8.0

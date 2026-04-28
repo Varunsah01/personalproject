@@ -292,7 +292,7 @@ python apply.py --email-summary-only
 ## 12. WHAT TO BUILD NEXT (ordered)
 
 1. ✅ `CLAUDE.md`, `profile.md`, `GUARDRAILS.md`, `guidelines.md` (this commit)
-2. Project skeleton: `apply.py`, `core/` (types, logger, scorer, browser), `platforms/base.py` (orchestration + primitives), `requirements.txt`, `.env.example`, `.gitignore`, review queue init, STOP-file check, browser profile setup
+2. ✅ Project skeleton: `apply.py`, `core/` (types, logger, scorer, browser), `platforms/base.py` (orchestration + primitives), `requirements.txt`, `.env.example`, `.gitignore`, review queue init, STOP-file check, browser profile setup
 3. `core/logger.py` + `core/scorer.py` with unit tests
 4. `platforms/naukri.py` end-to-end (login → search → apply → log)
 5. `platforms/linkedin.py` (Easy Apply only)
