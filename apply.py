@@ -354,6 +354,13 @@ async def _run_async(args: argparse.Namespace) -> None:
             dry_run=args.dry_run,
         )
 
+        if args.cap is not None:
+            logger.warning(
+                "[%s] --cap override: daily cap set to %d for this run only (normal cap: %d)",
+                name, args.cap, platform.daily_cap,
+            )
+            platform.daily_cap = args.cap
+
         # Build per-platform filters (Wellfound/Cutshort get 14-day window)
         filters = {
             **FILTERS,
@@ -415,6 +422,16 @@ def parse_args() -> argparse.Namespace:
         "--threshold",
         type=float,
         help="Override apply threshold for this run (not yet wired into scorer)",
+    )
+    parser.add_argument(
+        "--cap",
+        type=int,
+        default=None,
+        help=(
+            "Override daily cap for this run only. "
+            "CLI-only — never read from env, never persisted. "
+            "Logs a WARNING when used."
+        ),
     )
     parser.add_argument(
         "--email-summary-only",
