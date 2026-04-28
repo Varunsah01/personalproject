@@ -497,8 +497,8 @@ class LinkedInPlatform(BasePlatform):
             if label_el:
                 try:
                     label_text = (await label_el.inner_text()).strip()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Could not read radio label text: %s", exc)
             checked = await radio.is_checked()
             radio_groups[name].append({"text": label_text, "checked": checked})
 
@@ -562,8 +562,8 @@ class LinkedInPlatform(BasePlatform):
             }""")
             if label_text:
                 return label_text
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("JS label extraction failed: %s", exc)
 
         return ""
 
@@ -579,7 +579,8 @@ class LinkedInPlatform(BasePlatform):
                 return '{group_name}';
             }}""")
             return label_text
-        except Exception:
+        except Exception as exc:
+            logger.debug("JS radio group label extraction failed for '%s': %s", group_name, exc)
             return group_name
 
     def _is_essay_question(self, label: str) -> bool:
@@ -761,7 +762,8 @@ class LinkedInPlatform(BasePlatform):
                 current = await ta.input_value() if await ta.get_attribute("type") else ""
                 try:
                     current = current or await ta.inner_text() or ""
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Could not read textarea inner_text: %s", exc)
                     current = ""
                 if current.strip():
                     continue  # pre-filled — don't touch

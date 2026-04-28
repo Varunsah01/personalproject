@@ -473,7 +473,8 @@ class CutshortPlatform(BasePlatform):
         try:
             host = urlparse(url).netloc.lower()
             return CUTSHORT_DOMAIN not in host
-        except Exception:
+        except Exception as exc:
+            logger.debug("URL parse error checking for ATS redirect: %s", exc)
             return False
 
     async def _parse_apply_form(self) -> tuple[list[dict], bool]:
@@ -534,8 +535,8 @@ class CutshortPlatform(BasePlatform):
             }""")
             if label_text:
                 return label_text
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("JS label extraction failed: %s", exc)
 
         return ""
 
@@ -616,7 +617,8 @@ class CutshortPlatform(BasePlatform):
             for ta in textareas:
                 try:
                     current = await ta.input_value()
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Could not read textarea value: %s", exc)
                     current = ""
                 if current.strip():
                     continue  # pre-filled — don't touch

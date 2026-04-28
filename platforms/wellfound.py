@@ -493,8 +493,8 @@ class WellfoundPlatform(BasePlatform):
             }""")
             if label_text:
                 return label_text
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("JS label extraction failed: %s", exc)
 
         return ""
 
@@ -575,7 +575,8 @@ class WellfoundPlatform(BasePlatform):
             for ta in textareas:
                 try:
                     current = await ta.input_value()
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Could not read textarea value: %s", exc)
                     current = ""
                 if current.strip():
                     continue  # pre-filled — don't touch
