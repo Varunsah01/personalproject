@@ -750,6 +750,30 @@ class LinkedInPlatform(BasePlatform):
                 except Exception as exc:
                     logger.debug("Resume upload skipped or failed: %s", exc)
 
+        # Fill textareas from human-reviewed custom answers (review-queue path only).
+        # SEL_MODAL_TEXTAREA is TODO-marked — verify against a live modal with an essay field.
+        custom_answers = answers.get("_custom", {})
+        if custom_answers:
+            textareas = await self._page.query_selector_all(
+                f"{SEL_MODAL_CONTAINER} {SEL_MODAL_TEXTAREA}"
+            )
+            for ta in textareas:
+                current = await ta.input_value() if await ta.get_attribute("type") else ""
+                try:
+                    current = current or await ta.inner_text() or ""
+                except Exception:
+                    current = ""
+                if current.strip():
+                    continue  # pre-filled — don't touch
+                label = await self._get_field_label(ta)
+                answer = custom_answers.get(label.lower())
+                if answer:
+                    try:
+                        await ta.click()
+                        await ta.type(answer, delay=80)
+                    except Exception as exc:
+                        logger.debug("Failed to fill textarea '%s': %s", label, exc)
+
     def _match_standard_answer(self, label: str, answers: dict) -> str | None:
         """Match a field label to a standard answer from the answers dict."""
         label_lower = label.lower()

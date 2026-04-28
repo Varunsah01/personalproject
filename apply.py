@@ -22,8 +22,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from core.logger import count_today, init_log, read_log
+import json
+import webbrowser
+
+from core.logger import LogEntry, count_today, init_log, log_application, read_log
 from core.notifier import build_smtp_config, send_digest
+from core.scorer import Job
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +95,11 @@ SUMMARY_PATH = Path(os.getenv("SUMMARY_FILE", "data/daily_summary.csv"))
 RESUME_PATH = Path("Varun_Sah_CV.pdf")
 STOP_FILE = Path("data/STOP")
 QUEUE_PATH = Path("data/review_queue.csv")
+
+REVIEW_QUEUE_COLUMNS = [
+    "queued_at", "platform", "company_name", "role_title", "job_url",
+    "fit_score", "tier", "reason_queued", "custom_questions", "expires_at",
+]
 
 MIN_FREE_DISK_MB = 500          # guidelines.md §6
 RESUME_MAX_AGE_DAYS = 60        # guidelines.md §3.1
@@ -287,6 +296,261 @@ def _print_summary(
     print()
 
 
+# ── Review-queue handler ───────────────────────────────────────────────
+
+
+def _read_queue(path: Path) -> list[dict]:
+    """Read all entries from the review queue CSV."""
+    if not path.exists():
+        return []
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def _write_queue(path: Path, entries: list[dict]) -> None:
+    """Rewrite the review queue CSV with the given entries."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=REVIEW_QUEUE_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(entries)
+
+
+def _is_expired(entry: dict) -> bool:
+    """Return True if the queue entry's expires_at is in the past."""
+    raw = entry.get("expires_at", "")
+    if not raw:
+        return False
+    try:
+        exp = datetime.fromisoformat(raw)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) > exp
+    except ValueError:
+        return False
+
+
+def _display_item(idx: int, total: int, item: dict) -> None:
+    """Print a formatted header for one review-queue item."""
+    sep = "─" * 56
+    company = item.get("company_name") or "(unknown)"
+    role = item.get("role_title") or "(unknown)"
+    tier = item.get("tier") or "?"
+    print()
+    print(sep)
+    print(f"  Item {idx} / {total}  [{tier}] {company} — {role}")
+    print(sep)
+    score = item.get("fit_score") or "?"
+    platform = item.get("platform") or "?"
+    reason = item.get("reason_queued") or "?"
+    queued_at = (item.get("queued_at") or "")[:10]
+    expires_at = (item.get("expires_at") or "")[:10]
+    url = item.get("job_url") or ""
+    print(f"  Platform: {platform:<10} Score: {score:<6} Tier: {tier}")
+    print(f"  Reason:   {reason}")
+    print(f"  Queued:   {queued_at}  (expires {expires_at})")
+    print(f"  URL:      {url}")
+
+
+def _edit_answers(custom_qs: list[dict]) -> dict:
+    """Show each custom question and its suggested answer; let user edit.
+
+    Returns:
+        {question_text: final_answer} — preserving the original text as key.
+    """
+    print()
+    print("  Custom questions — edit your answer (Enter to keep suggested):")
+    print()
+    answers: dict[str, str] = {}
+    for i, q in enumerate(custom_qs, 1):
+        question = q.get("question") or q.get("label") or f"Question {i}"
+        suggested = q.get("suggested_answer") or ""
+        suggested_display = suggested if suggested else "(empty)"
+        print(f"  Q{i}: {question}")
+        print(f"  Suggested: {suggested_display}")
+        try:
+            user_input = input("  Your answer: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            user_input = ""
+        final = user_input if user_input else suggested
+        answers[question] = final
+        print()
+    return answers
+
+
+def _prompt_action() -> str:
+    """Prompt for the review action and return the chosen char."""
+    valid = {"a", "s", "d", "n", "q"}
+    print("  [a]pply  [s]kip  [d]raft (open in browser)  [n]ext (leave in queue)  [q]uit")
+    while True:
+        try:
+            choice = input("  Action: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return "q"
+        if choice in valid:
+            return choice
+        print(f"  Invalid choice '{choice}' — enter a, s, d, n, or q.")
+
+
+def _log_queue_entry(item: dict, status: str, notes: str) -> None:
+    """Log a queue item directly to applications_log.csv (no browser needed)."""
+    now = datetime.now(timezone.utc)
+    entry = LogEntry(
+        date_applied=now.strftime("%Y-%m-%d"),
+        time_applied=now.strftime("%H:%M"),
+        platform=item.get("platform") or "",
+        company_name=item.get("company_name") or "",
+        role_title=item.get("role_title") or "",
+        experience_required="",
+        location="",
+        job_url=item.get("job_url") or "",
+        fit_score=float(item.get("fit_score") or 0),
+        status=status,
+        notes=notes,
+    )
+    log_application(entry, LOG_PATH)
+
+
+async def _queue_apply(item: dict, answers: dict, args: argparse.Namespace) -> bool:
+    """Launch a browser, login, and apply to one review-queue job.
+
+    Args:
+        item: One row from review_queue.csv as a dict.
+        answers: {question_text: answer} from _edit_answers().
+        args: Parsed CLI args (used for headless flag).
+
+    Returns:
+        True if application was submitted (applied or applied_unconfirmed).
+    """
+    name = item.get("platform") or ""
+    try:
+        cls = _load_platform_class(name)
+    except Exception as exc:
+        logger.error("Cannot load platform '%s': %s", name, exc)
+        return False
+
+    headless = os.getenv("HEADLESS", "true").lower() != "false"
+    platform = cls(log_path=LOG_PATH, headless=headless, dry_run=False)
+
+    # Reconstruct a minimal Job — URL is stored in posted_date per platform convention
+    job = Job(
+        title=item.get("role_title") or "",
+        company=item.get("company_name") or "",
+        location="",
+        experience_required="",
+        jd_text="",
+        posted_date=item.get("job_url") or "",
+    )
+    fit_score = float(item.get("fit_score") or 0)
+    tier = item.get("tier") or "T1"
+
+    logged_in = await platform.login()
+    if not logged_in:
+        print(f"  Login failed for {name} — skipping apply.")
+        return False
+
+    status = "error"
+    notes = "apply not attempted"
+    try:
+        result = await platform.score_and_apply(job, fit_score, tier, answers)
+        status = result.get("status") or "error"
+        notes = result.get("notes") or ""
+        print(f"  Result: {status}" + (f" — {notes}" if notes else ""))
+    except Exception as exc:
+        logger.error("Error during queue apply for %s/%s: %s", name, item.get("job_url"), exc, exc_info=True)
+        notes = f"review apply error: {exc}"
+    finally:
+        try:
+            await platform.logout()
+        except Exception:
+            pass
+
+    _log_queue_entry(item, status, notes)
+    return status in ("applied", "applied_unconfirmed")
+
+
+def _handle_review_queue(args: argparse.Namespace) -> None:
+    """Interactive review-queue handler. Per guidelines.md §3.6."""
+    entries = _read_queue(QUEUE_PATH)
+    if not entries:
+        print("Queue is empty — no items to review.")
+        return
+
+    # Partition into expired and active
+    active: list[dict] = []
+    expired: list[dict] = []
+    for e in entries:
+        (expired if _is_expired(e) else active).append(e)
+
+    # Auto-skip expired entries
+    for e in expired:
+        _log_queue_entry(e, status="skipped", notes="queue expired")
+        logger.info(
+            "Auto-skipped expired queue item: [%s] %s — %s",
+            e.get("platform"), e.get("company_name"), e.get("role_title"),
+        )
+
+    if not active:
+        _write_queue(QUEUE_PATH, [])
+        skipped_msg = f"{len(expired)} expired item(s) auto-skipped." if expired else ""
+        print(f"No active items in queue.{' ' + skipped_msg if skipped_msg else ''}")
+        return
+
+    print(f"\n{len(active)} item(s) in review queue"
+          + (f" ({len(expired)} expired auto-skipped)" if expired else "") + ".")
+
+    to_remove: set[int] = set()
+
+    for idx, item in enumerate(active):
+        _display_item(idx + 1, len(active), item)
+
+        # Let user edit custom question answers (if any)
+        raw_qs = item.get("custom_questions") or "[]"
+        try:
+            custom_qs = json.loads(raw_qs)
+        except (json.JSONDecodeError, TypeError):
+            custom_qs = []
+
+        user_answers: dict[str, str] = {}
+        if custom_qs:
+            user_answers = _edit_answers(custom_qs)
+
+        action = _prompt_action()
+
+        if action == "q":
+            print("\nQuitting — remaining items unchanged.")
+            break
+
+        if action == "a":
+            print(f"\n  Launching browser for {item.get('platform')} apply…")
+            asyncio.run(_queue_apply(item, user_answers, args))
+            to_remove.add(idx)  # remove from queue regardless of apply outcome
+
+        elif action == "s":
+            _log_queue_entry(item, status="skipped", notes="reviewed: skipped")
+            print("  Logged as skipped.")
+            to_remove.add(idx)
+
+        elif action == "d":
+            url = item.get("job_url") or ""
+            if url:
+                webbrowser.open(url)
+                print(f"  Opened {url} in browser.")
+            else:
+                print("  No URL — cannot open.")
+            _log_queue_entry(item, status="skipped", notes="reviewed: manual")
+            to_remove.add(idx)
+
+        # "n" → leave in queue — don't add to to_remove
+
+    # Rewrite queue keeping only items not processed (and expired entries already stripped)
+    remaining = [e for i, e in enumerate(active) if i not in to_remove]
+    _write_queue(QUEUE_PATH, remaining)
+
+    processed = len(to_remove)
+    print(f"\n  {processed} item(s) processed, {len(remaining)} remaining in queue.\n")
+
+
 # ── Main async runner ──────────────────────────────────────────────────
 
 async def _run_async(args: argparse.Namespace) -> None:
@@ -473,9 +737,8 @@ def parse_args() -> argparse.Namespace:
 
 def run(args: argparse.Namespace) -> None:
     """Entry point — validates early-exit modes, then runs the async pipeline."""
-    # Review queue: stub until build step 9
     if args.review_queue:
-        print("Review queue handler not implemented yet.")
+        _handle_review_queue(args)
         return
 
     if args.email_summary_only:

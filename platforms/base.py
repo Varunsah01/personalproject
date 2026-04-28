@@ -13,6 +13,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
+from core.scorer import Job
+
 
 class BasePlatform(ABC):
     """Base class for all job platform integrations.
@@ -76,3 +78,34 @@ class BasePlatform(ABC):
     async def logout(self) -> None:
         """Log out of the platform gracefully."""
         raise NotImplementedError
+
+    async def score_and_apply(
+        self,
+        job: Job,
+        fit_score: float,
+        tier: str,
+        answers: dict | None = None,
+    ) -> dict:
+        """Apply to a queued job using human-reviewed answers for custom questions.
+
+        Called by the review-queue handler after Varun has confirmed and
+        optionally edited the suggested answers for any unrecognised fields.
+        Not abstract — delegates to the existing open_application_form /
+        fill_and_submit primitives that each platform already implements.
+
+        Args:
+            job: Job object (URL stored in job.posted_date per platform convention).
+            fit_score: Pre-computed fit score from the queue entry.
+            tier: Pre-classified tier (T1/T2/T3) from the queue entry.
+            answers: {question_text: answer} for custom questions, or None for
+                auto behaviour (identical to the normal Green apply path).
+
+        Returns:
+            {"status": str, "notes": str} from fill_and_submit.
+        """
+        merged = {
+            **getattr(self, "standard_answers", {}),
+            "_custom": {k.lower(): v for k, v in (answers or {}).items()},
+        }
+        form = await self.open_application_form(job)
+        return await self.fill_and_submit(form, merged)

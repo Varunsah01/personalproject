@@ -67,6 +67,7 @@ SEL_CHATBOT_RADIO_INPUT = "input.ssrc__radio"          # radio input — verifie
 SEL_CHATBOT_RADIO_LABEL = "label.ssrc__label"          # option label text — verified 2026-04-28
 SEL_CHATBOT_SAVE = "div.sendMsg"                       # "Save" button inside drawer — verified 2026-04-28
 SEL_CHATBOT_CLOSE = "div.crossIcon.chatBot-ic-cross"   # close X in chatbot nav — verified 2026-04-28
+SEL_CHATBOT_TEXT_INPUT = "input.ssrc__textInput"       # UNVERIFIED — free-text input in chatbot drawer. Used for review-queue applies only. Verify against live chatbot with a text question.
 SEL_RESUME_UPLOAD = "input.chatbot_Uploader[type='file']"  # hidden file input for resume — verified 2026-04-28
 
 # Confirmation page (navigated to after apply — /myapply/saveApply)
@@ -422,14 +423,18 @@ class NaukriPlatform(BasePlatform):
             return {"status": "applied", "notes": form["message"]}
 
         # Path B: chatbot drawer — answer questions
+        custom_answers = answers.get("_custom", {})
         for question in form["questions"]:
             q_text = question["text"].lower()
 
             if question["type"] == "radio" and question["options"]:
-                # Match the best answer from options
-                selected = self._match_radio_answer(q_text, question["options"])
+                # Use human-reviewed answer if provided, otherwise auto-match
+                provided = custom_answers.get(q_text)
+                if provided:
+                    selected = provided
+                else:
+                    selected = self._match_radio_answer(q_text, question["options"])
                 if selected:
-                    # Click the matching radio label
                     labels = await self._page.query_selector_all(SEL_CHATBOT_RADIO_LABEL)
                     for label in labels:
                         label_text = (await label.inner_text()).strip()
@@ -438,6 +443,19 @@ class NaukriPlatform(BasePlatform):
                             break
                 else:
                     logger.warning("No matching answer for radio question: %s", question["text"])
+
+            elif question["type"] == "text":
+                provided = custom_answers.get(q_text)
+                if provided:
+                    try:
+                        await human_type(self._page, SEL_CHATBOT_TEXT_INPUT, provided)
+                    except Exception as exc:
+                        # Selector is unverified — fail gracefully, don't block the submit
+                        logger.warning(
+                            "Could not fill text question '%s': %s "
+                            "(SEL_CHATBOT_TEXT_INPUT may need updating from live DOM)",
+                            question["text"], exc,
+                        )
 
         # Upload resume if the file input is available
         resume_path = Path("Varun_Sah_CV.pdf")

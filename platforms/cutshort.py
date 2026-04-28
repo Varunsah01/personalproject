@@ -606,6 +606,29 @@ class CutshortPlatform(BasePlatform):
                 except Exception as exc:
                     logger.debug("Failed to fill field '%s': %s", label, exc)
 
+        # Fill textareas from human-reviewed custom answers (review-queue path only).
+        # SEL_FORM_TEXTAREA is TODO-marked — verify against a live form with a textarea.
+        custom_answers = answers.get("_custom", {})
+        if custom_answers:
+            textareas = await self._page.query_selector_all(
+                f"{SEL_APPLY_FORM} {SEL_FORM_TEXTAREA}"
+            )
+            for ta in textareas:
+                try:
+                    current = await ta.input_value()
+                except Exception:
+                    current = ""
+                if current.strip():
+                    continue  # pre-filled — don't touch
+                label = await self._get_field_label(ta)
+                answer = custom_answers.get(label.lower())
+                if answer:
+                    try:
+                        await ta.click()
+                        await ta.type(answer, delay=80)
+                    except Exception as exc:
+                        logger.debug("Failed to fill textarea '%s': %s", label, exc)
+
         # Click submit
         try:
             submit_btn = await self._page.wait_for_selector(SEL_FORM_SUBMIT, timeout=5_000)
