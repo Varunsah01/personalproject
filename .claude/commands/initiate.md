@@ -66,40 +66,20 @@ After completion: collect the list of newly drafted rows.
 
 ## Stage 5 — Manager quality review
 
-**This is YOUR job — do not delegate.**
+Invoke `manager` via the Agent tool:
 
-For each row now at `status=drafted`, read the draft file at the path in
-`body_path`. Score against the quality rubric in CLAUDE.md:
-
-| # | Dimension    |
-|---|--------------|
-| 1 | Specificity  |
-| 2 | Voice        |
-| 3 | Ask          |
-| 4 | Length        |
-| 5 | Risk         |
-
-Each dimension: 1-5. Compute the average.
-
-**If average >= 4.0:**
-- Write to tracker notes: `quality: S/V/A/L/R avg=X.X, manager_approved=true`
-- This draft is ready for Varun's review.
-
-**If average < 4.0:**
-- Write to tracker notes: `quality: S/V/A/L/R avg=X.X, manager_approved=false,
-  feedback: [specific issues]`
-- Re-invoke `message_writer` via the Agent tool with feedback:
-  > Rewrite the draft for row {id} ({company} / {person_name}). Issues:
-  > {specific feedback from scoring}. Read the existing draft at {body_path}
-  > and produce an improved version.
-- Score the retry. If still < 4.0, close the row:
-  `update_notes(row_id, "closed by manager: failed quality rubric after retry")`
-  then close via tracker.
-
-**Hard rejections (no retry):**
-- Draft fabricates facts not traceable to a public source or profile.md → reject
-- Company appears in profile/exclusions.yml or profile.md §15 → reject
-- Risk dimension scores < 3 → reject
+> Run **batch_review** mode. Score all rows at `status=drafted` against the
+> quality rubric (Specificity, Voice, Ask, Length, Risk — 1-5 each, threshold
+> >= 4.0). Update tracker notes with scores. For drafts scoring < 4.0,
+> re-invoke `message_writer` with specific feedback for one retry. Close rows
+> that fail after retry. Return the summary table.
+>
+> Hard rejections (no retry):
+> - Draft fabricates facts not traceable to a public source or profile.md
+> - Company appears in profile/exclusions.yml or profile.md §15
+> - Risk dimension scores < 3
+>
+> See `.claude/agents/manager.md` for the full rubric and rules.
 
 ---
 
