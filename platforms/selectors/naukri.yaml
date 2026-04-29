@@ -1,0 +1,48 @@
+# Naukri.com CSS selectors — verified 2026-04-28 unless noted.
+# Edit ONLY this file when selectors break (guidelines.md §4.4).
+# After editing, call self.sel.reload() and re-test with --dry-run.
+
+# Login page
+login_email: "input[placeholder*='Email']"            # UNVERIFIED — React-rendered, redirects when logged in
+login_password: "input[type='password']"              # UNVERIFIED — same reason
+login_submit: "button[type='submit']"                 # UNVERIFIED — same reason
+login_success: "img.nI-gNb-icon-img"                  # profile avatar, alt="naukri user profile img" — verified 2026-04-28
+captcha: "iframe[src*='recaptcha']"                   # reCAPTCHA iframe — verified 2026-04-28
+
+# Search results page
+job_card: "div.srp-jobtuple-wrapper"                  # 20 per page — verified 2026-04-28
+job_title: "a.title"                                  # inside h2 in .row1 — verified 2026-04-28
+job_company: "a.comp-name"                            # inside .comp-dtls-wrap in .row2 — verified 2026-04-28
+job_location: "span.loc-wrap"                         # inside .job-details in .row3 — verified 2026-04-28
+job_experience: "span.exp-wrap"                       # inside .job-details in .row3 — verified 2026-04-28
+job_url: "a.title"                                    # same as title; read href attr — verified 2026-04-28
+job_snippet: "span.job-desc"                          # in .row4 — verified 2026-04-28
+next_page: "a.styles_btn-secondary__2AsIP"            # hash-based class, fragile. Inside .styles_pagination__oIvXh — verified 2026-04-28
+
+# Job detail page
+apply_button: "button#apply-button"                   # class "styles_apply-button__uJI3A apply-button" — verified 2026-04-28
+
+# Chatbot questionnaire drawer
+chatbot_drawer: "div.chatbot_Drawer"                  # drawer panel — verified 2026-04-28
+chatbot_overlay: "div.chatbot_Overlay.show"           # background overlay — verified 2026-04-28
+chatbot_msg_container: "div.chatbot_MessageContainer" # messages area — verified 2026-04-28
+chatbot_question: "div.botMsg.msg"                    # individual question text — verified 2026-04-28
+chatbot_radio_container: "div.ssrc__radio-btn-container" # each radio option — verified 2026-04-28
+chatbot_radio_input: "input.ssrc__radio"              # radio input — verified 2026-04-28
+chatbot_radio_label: "label.ssrc__label"              # option label text — verified 2026-04-28
+chatbot_save: "div.sendMsg"                           # "Save" button inside drawer — verified 2026-04-28
+chatbot_close: "div.crossIcon.chatBot-ic-cross"       # close X in chatbot nav — verified 2026-04-28
+chatbot_text_input: "input.ssrc__textInput"           # UNVERIFIED — free-text input in chatbot drawer
+
+# File upload
+resume_upload: "input.chatbot_Uploader[type='file']"  # hidden file input for resume — verified 2026-04-28
+
+# Confirmation page (/myapply/saveApply)
+confirmation_page: "div.acp-container"                # page container — verified 2026-04-28
+apply_success: "div.apply-status-header.green"        # green header = success — verified 2026-04-28
+apply_rejected: "div.apply-status-header.red"         # red header = rejected — verified 2026-04-28
+apply_message: "span.apply-message"                   # status text — verified 2026-04-28
+
+# Logout
+profile_dropdown: "div.nI-gNb-drawer__icon"           # hamburger/profile drawer trigger — verified 2026-04-28
+logout_link: "a.nI-gNb-list-cta"                      # "Logout" link, last item in drawer — verified 2026-04-28

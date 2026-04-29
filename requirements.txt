@@ -1,8 +1,15 @@
 # Browser automation — drives Chrome for login, search, apply flows
 playwright>=1.44
 
+# Patches Playwright pages to evade common bot-detection fingerprints
+# (webdriver flag, chrome.runtime, plugins array, etc.)
+playwright-stealth>=1.0.6
+
 # Loads .env credentials and config without touching the shell environment
 python-dotenv>=1.0
+
+# YAML selector files (platforms/selectors/*.yaml) loaded by core/selectors.py
+PyYAML>=6.0
 
 # Test runner — scoring logic, dedupe, CSV writes have unit tests
 pytest>=8.0

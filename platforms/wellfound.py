@@ -14,10 +14,8 @@ Two Wellfound-specific behaviours vs the other platforms:
 Apply flow: single-step modal (simpler than LinkedIn's multi-step).
 External apply (company site redirect): detected and skipped.
 
-Selector strategy: all CSS selectors are class constants at the top.
-They WILL break when Wellfound ships UI changes — update them here,
-nowhere else. Each selector has a comment with what it targets and
-when it was last verified.
+Selectors live in platforms/selectors/wellfound.yaml (guidelines.md §4.4).
+Edit the YAML to fix broken selectors; call self.sel.reload() to hot-patch.
 """
 
 from __future__ import annotations
@@ -35,74 +33,28 @@ from pathlib import Path
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from core.browser import create_browser_context, human_type
+from core.browser import create_browser_context, human_click, human_type
 from core.logger import LogEntry, count_today, init_log, is_duplicate, log_application
 from core.scorer import Job, classify_tier, score_job, should_apply
+from core.selectors import SelectorStore
+from core.types import BotConfig
 from platforms.base import BasePlatform
 
 logger = logging.getLogger(__name__)
 
 
-# ── Selectors ──────────────────────────────────────────────────────────
-# Verification status 2026-04-28:
-#   BLOCKER — Wellfound's login page renders completely blank under Playwright
-#   (even with --disable-blink-features=AutomationControlled + webdriver mask).
-#   This is Kasada or similar advanced bot protection. The login page DOM
-#   inspection script returned 0 forms, 0 inputs, 0 buttons — the JS bundle
-#   never executes for detected bots.
-#
-#   Recommended approach: manually log in once in the persistent profile browser
-#   (headless=False, profile at data/browser_profiles/wellfound/) and let the
-#   session cookies carry subsequent headless runs. After manual login, run a
-#   single --dry-run to verify all selectors with an active session.
-#
-#   Selectors marked "? needs-credentials" were NOT reachable during the
-#   2026-04-28 inspection due to bot protection. They are best-guess values
-#   based on Wellfound's React data-test attribute conventions.
+# ── URLs ───────────────────────────────────────────────────────────────
+# Selectors have moved to platforms/selectors/wellfound.yaml (guidelines.md §4.4).
+# Edit the YAML to fix broken selectors; call self.sel.reload() to hot-patch.
 
-# Login page
 LOGIN_URL = "https://wellfound.com/login"
-SEL_LOGIN_EMAIL = "input[name='user[email]']"               # ? needs-credentials: bot protection blocked inspection — best-guess name attr from prior Wellfound builds
-SEL_LOGIN_PASSWORD = "input[name='user[password]']"         # ? needs-credentials: same caveat
-SEL_LOGIN_SUBMIT = "button[type='submit']"                   # ? needs-credentials: same caveat
-SEL_LOGIN_SUCCESS = "a[href*='/me']"                         # ? needs-credentials: element only visible when logged in (profile nav link)
-
-# Profile completeness (checked immediately after login)
 PROFILE_URL = "https://wellfound.com/profile/edit"
-SEL_PROFILE_COMPLETENESS = "div.profile-completeness"        # ? needs-credentials: element showing completeness % (progress bar or text like "82% complete")
-
-# Search results page
 SEARCH_URL_TEMPLATE = (
     "https://wellfound.com/jobs"
     "?q={keyword}"
     "&l={location}"
     "&page={page}"
 )
-SEL_JOB_CARD = "div[data-test='StartupResult']"              # ? needs-credentials: each job listing card — data-test='StartupResult' is a known Wellfound pattern
-SEL_JOB_TITLE = "a[data-test='job-title']"                   # ? needs-credentials: job title link inside card
-SEL_JOB_COMPANY = "a[data-test='startup-link']"              # ? needs-credentials: company name/link
-SEL_JOB_LOCATION = "span[data-test='location']"              # ? needs-credentials: location text
-SEL_JOB_EXPERIENCE = "span[data-test='job-type']"            # ? needs-credentials: experience/type text (may not exist per-card)
-SEL_JOB_URL = "a[data-test='job-title']"                     # ? needs-credentials: same as title; read href attr
-SEL_JOB_SNIPPET = "p[data-test='job-description']"           # ? needs-credentials: short JD snippet on card
-SEL_NEXT_PAGE = "a[rel='next']"                              # ? needs-credentials: next page link or load-more button
-
-# Job detail / apply flow
-SEL_APPLY_BUTTON = "button[data-test='apply-button']"        # ? needs-credentials: "Apply" button on job detail page
-SEL_EXTERNAL_APPLY_INDICATOR = "a[data-test='external-apply']"  # ? needs-credentials: link/button that redirects to company site instead of Wellfound modal
-SEL_ALREADY_APPLIED = "span[data-test='applied-badge']"      # ? needs-credentials: "Applied" badge when already applied to this role
-SEL_APPLY_MODAL = "div[data-test='apply-modal']"             # ? needs-credentials: the apply form container/modal
-SEL_MODAL_CLOSE = "button[data-test='close-modal']"          # ? needs-credentials: X / close button on the modal
-
-# Modal form fields
-SEL_WHY_TEXTAREA = "textarea[name*='why'], textarea[placeholder*='why'], textarea[data-test*='why']"  # ? needs-credentials: "Why do you want to work here?" textarea — name attr varies; multiple candidates listed
-SEL_MODAL_INPUT_TEXT = "input[type='text']"                  # ? needs-credentials: standard text inputs inside the apply modal
-SEL_MODAL_LABEL = "label"                                    # ? needs-credentials: field labels inside modal
-SEL_RESUME_UPLOAD = "input[type='file']"                     # ? needs-credentials: hidden file input for resume upload
-SEL_MODAL_SUBMIT = "button[data-test='submit-application']"  # ? needs-credentials: "Send Application" / "Submit" button in modal
-
-# Post-apply confirmation
-SEL_APPLY_SUCCESS = "div[data-test='application-sent']"      # ? needs-credentials: success message / toast shown after successful submission
 
 
 # ── Config ─────────────────────────────────────────────────────────────
@@ -162,48 +114,27 @@ class WellfoundPlatform(BasePlatform):
     work here?" or other custom essay fields (queued to Yellow instead).
 
     Args:
-        log_path: Path to applications_log.csv.
-        headless: Run browser in headless mode.
-        dry_run: Score and log but never click Apply.
+        config: BotConfig with shared settings (log path, caps, headless, etc.).
     """
 
     PLATFORM_NAME = "wellfound"
 
-    def __init__(
-        self,
-        log_path: Path | str = "data/applications_log.csv",
-        headless: bool = True,
-        dry_run: bool = False,
-    ) -> None:
-        self.log_path = Path(log_path)
-        self.headless = headless
-        self.dry_run = dry_run
+    def __init__(self, config: BotConfig) -> None:
+        super().__init__(config)
 
-        # Loaded from .env at runtime
+        # Platform-specific credentials (from .env)
         self.email = os.getenv("WELLFOUND_EMAIL", "")
         self.password = os.getenv("WELLFOUND_PASSWORD", "")
-        self.daily_cap = int(os.getenv("DAILY_CAP_WELLFOUND", "30"))
 
-        # Standard answers for form filling
-        self.standard_answers: dict[str, str] = {
-            "name": "Varun Sah",
+        # Selector registry — backed by platforms/selectors/wellfound.yaml
+        self.sel = SelectorStore("wellfound")
+
+        # Augment shared standard_answers with Wellfound-specific fields
+        self.standard_answers.update({
             "email": self.email,
-            "phone": "+91-8595062552",
-            "location": "Delhi NCR",
-            "notice_period": "Immediate",
-            "years_of_experience": "4",
-            "linkedin": "https://www.linkedin.com/in/varun-sah/",
             "current_ctc": os.getenv("WELLFOUND_CURRENT_CTC", ""),
             "expected_ctc": os.getenv("WELLFOUND_EXPECTED_CTC", ""),
-        }
-
-        # Session state
-        self._page: Page | None = None
-        self._context = None
-        self._playwright = None
-        self._selector_failures = 0
-        self._session_start = 0.0
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        })
 
     # ── BasePlatform interface ─────────────────────────────────────────
 
@@ -243,9 +174,9 @@ class WellfoundPlatform(BasePlatform):
             logger.info("Already logged in via persistent session")
         else:
             try:
-                await self._page.fill(SEL_LOGIN_EMAIL, self.email)
-                await human_type(self._page, SEL_LOGIN_PASSWORD, self.password)
-                await self._page.click(SEL_LOGIN_SUBMIT)
+                await human_type(self._page, self.sel.login_email, self.email)
+                await human_type(self._page, self.sel.login_password, self.password)
+                await human_click(self._page, self.sel.login_submit)
                 await self._page.wait_for_load_state("networkidle", timeout=15_000)
             except PlaywrightTimeout:
                 logger.error("Login form interaction timed out")
@@ -298,7 +229,7 @@ class WellfoundPlatform(BasePlatform):
             return -1
 
         try:
-            el = await self._page.wait_for_selector(SEL_PROFILE_COMPLETENESS, timeout=5_000)
+            el = await self._page.wait_for_selector(self.sel.profile_completeness, timeout=5_000)
         except PlaywrightTimeout:
             return -1  # selector not found — treat as unknown
 
@@ -337,7 +268,7 @@ class WellfoundPlatform(BasePlatform):
             logger.error("search() called before login()")
             return
 
-        location = filters.get("locations", [""])[0] if filters.get("locations") else ""
+        location = "India"  # broad India scope — consistent with LinkedIn
 
         for page_num in range(1, MAX_PAGES_PER_KEYWORD + 1):
             if self._should_stop():
@@ -358,7 +289,14 @@ class WellfoundPlatform(BasePlatform):
                 if not retried:
                     break
 
-            job_cards = await self._page.query_selector_all(SEL_JOB_CARD)
+            # Wait for job cards to render before querying
+            try:
+                await self._page.wait_for_selector(self.sel.job_card, timeout=10_000)
+            except PlaywrightTimeout:
+                logger.info("No job cards found on page %d — end of results", page_num)
+                break
+
+            job_cards = await self._page.query_selector_all(self.sel.job_card)
             if not job_cards:
                 logger.info("No job cards found on page %d — end of results", page_num)
                 break
@@ -371,7 +309,7 @@ class WellfoundPlatform(BasePlatform):
                     yield job
 
             # Check for next page
-            next_button = await self._page.query_selector(SEL_NEXT_PAGE)
+            next_button = await self._page.query_selector(self.sel.next_page)
             if not next_button:
                 logger.info("No next page button — end of results for '%s'", keyword)
                 break
@@ -404,36 +342,36 @@ class WellfoundPlatform(BasePlatform):
         await self._page.goto(job_url, wait_until="domcontentloaded", timeout=30_000)
 
         # Check if already applied
-        already = await self._page.query_selector(SEL_ALREADY_APPLIED)
+        already = await self._page.query_selector(self.sel.already_applied)
         if already:
             text = (await already.inner_text()).strip().lower()
             if "applied" in text:
                 return {"path": "already_applied", "has_unrecognized": False, "has_why_textarea": False, "questions": []}
 
         # Check for external apply (redirects to company site — skip)
-        external = await self._page.query_selector(SEL_EXTERNAL_APPLY_INDICATOR)
+        external = await self._page.query_selector(self.sel.external_apply_indicator)
         if external:
             return {"path": "external_apply", "has_unrecognized": False, "has_why_textarea": False, "questions": []}
 
         # Check for the Apply button
-        apply_btn = await self._page.query_selector(SEL_APPLY_BUTTON)
+        apply_btn = await self._page.query_selector(self.sel.apply_button)
         if not apply_btn:
             return {"path": "no_apply_button", "has_unrecognized": False, "has_why_textarea": False, "questions": []}
 
         # Click Apply — modal should appear
         try:
-            await apply_btn.click(timeout=10_000)
+            await human_click(self._page, self.sel.apply_button)
         except PlaywrightTimeout:
             await asyncio.sleep(SELECTOR_RETRY_DELAY)
             try:
-                await apply_btn.click(timeout=10_000)
+                await human_click(self._page, self.sel.apply_button)
             except PlaywrightTimeout:
                 self._selector_failures += 1
                 raise
 
         # Wait for the apply modal
         try:
-            await self._page.wait_for_selector(SEL_APPLY_MODAL, timeout=10_000)
+            await self._page.wait_for_selector(self.sel.apply_modal, timeout=10_000)
         except PlaywrightTimeout:
             return {"path": "unknown", "has_unrecognized": False, "has_why_textarea": False, "questions": []}
 
@@ -443,7 +381,7 @@ class WellfoundPlatform(BasePlatform):
         has_why_textarea = False
 
         # Check for "Why do you want to work here?" textarea (the primary Yellow trigger)
-        why_el = await self._page.query_selector(SEL_WHY_TEXTAREA)
+        why_el = await self._page.query_selector(self.sel.why_textarea)
         if why_el:
             has_why_textarea = True
             has_unrecognized = True
@@ -451,11 +389,11 @@ class WellfoundPlatform(BasePlatform):
 
         # Check all text inputs for unrecognised labels
         text_inputs = await self._page.query_selector_all(
-            f"{SEL_APPLY_MODAL} {SEL_MODAL_INPUT_TEXT}"
+            f"{self.sel.apply_modal} {self.sel.modal_input_text}"
         )
         for inp in text_inputs:
             label = await self._get_field_label(inp)
-            # Check if this textarea is an essay question even if not caught by SEL_WHY_TEXTAREA
+            # Check if this field is an essay question even if not caught by why_textarea
             if self._is_essay_question(label):
                 has_unrecognized = True
                 questions.append({"label": label, "type": "text_essay"})
@@ -465,10 +403,9 @@ class WellfoundPlatform(BasePlatform):
             else:
                 questions.append({"label": label, "type": "text"})
 
-        # Check for any textareas not caught by SEL_WHY_TEXTAREA
-        textareas = await self._page.query_selector_all(f"{SEL_APPLY_MODAL} textarea")
+        # Check for any textareas not caught by why_textarea
+        textareas = await self._page.query_selector_all(f"{self.sel.apply_modal} textarea")
         for ta in textareas:
-            # SEL_WHY_TEXTAREA may already cover this — dedupe by checking count
             label = await self._get_field_label(ta)
             if not any(q["label"] == label for q in questions):
                 has_unrecognized = True
@@ -553,7 +490,7 @@ class WellfoundPlatform(BasePlatform):
         resume_path = Path("Varun_Sah_CV.pdf")
         if resume_path.exists():
             file_inputs = await self._page.query_selector_all(
-                f"{SEL_APPLY_MODAL} {SEL_RESUME_UPLOAD}"
+                f"{self.sel.apply_modal} {self.sel.resume_upload}"
             )
             for fi in file_inputs:
                 try:
@@ -563,7 +500,7 @@ class WellfoundPlatform(BasePlatform):
 
         # Fill empty text inputs with standard answers
         text_inputs = await self._page.query_selector_all(
-            f"{SEL_APPLY_MODAL} {SEL_MODAL_INPUT_TEXT}"
+            f"{self.sel.apply_modal} {self.sel.modal_input_text}"
         )
         for inp in text_inputs:
             value = await inp.get_attribute("value") or ""
@@ -573,17 +510,17 @@ class WellfoundPlatform(BasePlatform):
             answer = self._match_standard_answer(label)
             if answer:
                 inp_id = await inp.get_attribute("id")
-                selector = f"#{inp_id}" if inp_id else SEL_MODAL_INPUT_TEXT
+                selector = f"#{inp_id}" if inp_id else self.sel.modal_input_text
                 try:
                     await human_type(self._page, selector, answer)
                 except Exception as exc:
                     logger.debug("Failed to fill field '%s': %s", label, exc)
 
         # Fill textareas from human-reviewed custom answers (review-queue path only).
-        # SEL_WHY_TEXTAREA is unverified — see selector note at top of file.
+        # why_textarea selector is unverified — see selector note in wellfound.yaml.
         custom_answers = answers.get("_custom", {})
         if custom_answers:
-            textareas = await self._page.query_selector_all(f"{SEL_APPLY_MODAL} textarea")
+            textareas = await self._page.query_selector_all(f"{self.sel.apply_modal} textarea")
             for ta in textareas:
                 try:
                     current = await ta.input_value()
@@ -603,7 +540,7 @@ class WellfoundPlatform(BasePlatform):
 
         # Click submit
         try:
-            submit_btn = await self._page.wait_for_selector(SEL_MODAL_SUBMIT, timeout=5_000)
+            submit_btn = await self._page.wait_for_selector(self.sel.modal_submit, timeout=5_000)
             await submit_btn.click(timeout=10_000)
         except PlaywrightTimeout:
             self._selector_failures += 1
@@ -611,7 +548,7 @@ class WellfoundPlatform(BasePlatform):
 
         # Wait for success state
         try:
-            await self._page.wait_for_selector(SEL_APPLY_SUCCESS, timeout=10_000)
+            await self._page.wait_for_selector(self.sel.apply_success, timeout=10_000)
             return {"status": "applied", "notes": ""}
         except PlaywrightTimeout:
             return {"status": "applied_unconfirmed", "notes": "no success indicator after submit"}
@@ -644,7 +581,7 @@ class WellfoundPlatform(BasePlatform):
     async def _close_modal(self) -> None:
         """Close the apply modal without submitting."""
         try:
-            close_btn = await self._page.query_selector(SEL_MODAL_CLOSE)
+            close_btn = await self._page.query_selector(self.sel.modal_close)
             if close_btn:
                 await close_btn.click(timeout=5_000)
                 await asyncio.sleep(0.5)
@@ -653,11 +590,14 @@ class WellfoundPlatform(BasePlatform):
 
     async def logout(self) -> None:
         """Log out of Wellfound and close browser context."""
-        # Wellfound logout is typically at /logout or via a nav menu.
-        # Just closing the context is sufficient for session management
-        # since we use persistent profiles — no need to explicitly log out.
-        # If a logout selector is needed, add it here after the selector session.
-        logger.info("Wellfound: closing browser context (no explicit logout needed)")
+        if self._page is not None:
+            try:
+                await self._page.click(self.sel.profile_menu, timeout=5_000)
+                await asyncio.sleep(0.5)
+                await self._page.click(self.sel.logout_link, timeout=5_000)
+                logger.info("Wellfound logout successful")
+            except PlaywrightTimeout:
+                logger.warning("Logout selectors failed — closing browser anyway")
 
         if self._context is not None:
             await self._context.close()
@@ -674,13 +614,13 @@ class WellfoundPlatform(BasePlatform):
         """
         import time
         self._session_start = time.monotonic()
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        self._stats.reset()
 
         init_log(self.log_path)
 
         logged_in = await self.login()
         if not logged_in:
-            return self._stats
+            return self._stats.as_dict()
 
         try:
             for keyword in keywords:
@@ -695,8 +635,8 @@ class WellfoundPlatform(BasePlatform):
         finally:
             await self.logout()
 
-        logger.info("[wellfound] Run complete — %s", self._stats)
-        return self._stats
+        logger.info("[wellfound] Run complete — %s", self._stats.as_dict())
+        return self._stats.as_dict()
 
     async def _process_job(self, job: Job) -> None:
         """Per-job flow: dedupe → hard-skip → score → threshold → cap → apply.
@@ -805,7 +745,7 @@ class WellfoundPlatform(BasePlatform):
     async def _is_logged_in(self) -> bool:
         """Check if the page shows a logged-in state."""
         try:
-            await self._page.wait_for_selector(SEL_LOGIN_SUCCESS, timeout=3_000)
+            await self._page.wait_for_selector(self.sel.login_success, timeout=3_000)
             return True
         except PlaywrightTimeout:
             return False
@@ -817,24 +757,24 @@ class WellfoundPlatform(BasePlatform):
         Stores job URL in posted_date for use in the apply flow.
         """
         try:
-            title = await card.query_selector(SEL_JOB_TITLE)
+            title = await card.query_selector(self.sel.job_title)
             title_text = (await title.inner_text()).strip() if title else ""
 
-            company = await card.query_selector(SEL_JOB_COMPANY)
+            company = await card.query_selector(self.sel.job_company)
             company_text = (await company.inner_text()).strip() if company else ""
 
-            location = await card.query_selector(SEL_JOB_LOCATION)
+            location = await card.query_selector(self.sel.job_location)
             location_text = (await location.inner_text()).strip() if location else ""
 
-            experience = await card.query_selector(SEL_JOB_EXPERIENCE)
+            experience = await card.query_selector(self.sel.job_experience)
             experience_text = (await experience.inner_text()).strip() if experience else ""
 
-            url_el = await card.query_selector(SEL_JOB_URL)
+            url_el = await card.query_selector(self.sel.job_url)
             url = (await url_el.get_attribute("href")) if url_el else ""
             if url and not url.startswith("http"):
                 url = f"https://wellfound.com{url}"
 
-            snippet = await card.query_selector(SEL_JOB_SNIPPET)
+            snippet = await card.query_selector(self.sel.job_snippet)
             snippet_text = (await snippet.inner_text()).strip() if snippet else ""
 
             if not title_text or not url:
@@ -903,7 +843,7 @@ class WellfoundPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats[status] = self._stats.get(status, 0) + 1
+        self._stats.increment(status)
         logger.debug("Recorded: %s at %s [%s] %s", job.title, job.company, status, notes)
 
     def _log_error(self, notes: str) -> None:
@@ -923,7 +863,7 @@ class WellfoundPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats["errored"] += 1
+        self._stats.errored += 1
 
     def _queue_for_review(
         self,

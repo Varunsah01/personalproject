@@ -1,0 +1,46 @@
+# Wellfound (AngelList) CSS selectors.
+# BLOCKER 2026-04-28: login page renders blank under Playwright (Kasada bot protection).
+# All selectors marked "? needs-credentials" are best-guess values based on
+# Wellfound's React data-test attribute conventions — unverified.
+# Recommended approach: manual login once via headless=False persistent profile.
+# Edit ONLY this file when selectors break (guidelines.md §4.4).
+
+# Login page
+login_email: "input[name='user[email]']"                # ? needs-credentials: bot protection blocked inspection
+login_password: "input[name='user[password]']"          # ? needs-credentials: same caveat
+login_submit: "button[type='submit']"                   # ? needs-credentials: same caveat
+login_success: "a[href*='/me']"                         # ? needs-credentials: profile nav link when logged in
+
+# Profile completeness (checked after login)
+profile_completeness: "div.profile-completeness"        # ? needs-credentials: progress bar / "82% complete" text
+
+# Search results page
+job_card: "div[data-test='StartupResult']"              # ? needs-credentials
+job_title: "a[data-test='job-title']"                   # ? needs-credentials
+job_company: "a[data-test='startup-link']"              # ? needs-credentials
+job_location: "span[data-test='location']"              # ? needs-credentials
+job_experience: "span[data-test='job-type']"            # ? needs-credentials: may not exist per-card
+job_url: "a[data-test='job-title']"                     # ? needs-credentials: read href attr
+job_snippet: "p[data-test='job-description']"           # ? needs-credentials
+next_page: "a[rel='next']"                              # ? needs-credentials
+
+# Job detail / apply flow
+apply_button: "button[data-test='apply-button']"        # ? needs-credentials
+external_apply_indicator: "a[data-test='external-apply']" # ? needs-credentials: redirects to company site — SKIP
+already_applied: "span[data-test='applied-badge']"      # ? needs-credentials
+apply_modal: "div[data-test='apply-modal']"             # ? needs-credentials
+modal_close: "button[data-test='close-modal']"          # ? needs-credentials
+
+# Modal form fields
+why_textarea: "textarea[name*='why'], textarea[placeholder*='why'], textarea[data-test*='why']" # ? needs-credentials: "Why do you want to work here?" — auto-Yellow
+modal_input_text: "input[type='text']"                  # ? needs-credentials
+modal_label: "label"                                    # ? needs-credentials
+resume_upload: "input[type='file']"                     # ? needs-credentials
+modal_submit: "button[data-test='submit-application']"  # ? needs-credentials
+
+# Post-apply confirmation
+apply_success: "div[data-test='application-sent']"      # ? needs-credentials
+
+# Navigation / logout
+profile_menu: "button[data-test='user-menu'], nav img[alt*='avatar'], nav a[href*='/settings']" # ? needs-credentials: avatar/menu trigger in top nav
+logout_link: "a[data-test='logout'], a[href*='/logout'], button[data-test='logout']"            # ? needs-credentials: sign-out link inside avatar dropdown

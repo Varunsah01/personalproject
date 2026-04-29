@@ -1,0 +1,45 @@
+# Cutshort CSS selectors.
+# CRITICAL 2026-04-28: email/password login removed from Cutshort.
+# /login redirects to home. Login modal offers Google OAuth or phone OTP only.
+# Selectors marked "? needs-credentials" need verification against a logged-in session.
+# NOTE: Cutshort uses Styled-Components with obfuscated class names — data-test attrs
+# are the correct strategy but unconfirmed without an authenticated session.
+# Edit ONLY this file when selectors break (guidelines.md §4.4).
+
+# Login page (persistent-session approach)
+candidate_login_btn: "button:has-text('Candidate login')"       # verified 2026-04-28: opens login modal
+login_google: "button:has-text('Signup or login with Google')"  # verified 2026-04-28: Google OAuth button
+login_phone: "button[label='Login using phone']"                # verified 2026-04-28: phone OTP button
+# Legacy email/password selectors — DO NOT EXIST as of 2026-04-28.
+# Kept so login() gracefully times out and falls through to persistent-session check.
+login_email: "input[type='email']"          # DOES NOT EXIST — kept as no-op
+login_password: "input[type='password']"    # DOES NOT EXIST — kept as no-op
+login_submit: "button[type='submit']"       # DOES NOT EXIST — kept as no-op
+login_success: "a[href*='/profile']"        # ? needs-credentials: visible only when logged in
+
+# Search results (tag-based)
+job_card: "div[data-test='job-card']"                   # ? needs-credentials: data-test attr unconfirmed
+job_title: "a[data-test='job-title']"                   # ? needs-credentials
+job_company: "span[data-test='company-name']"           # ? needs-credentials
+job_location: "span[data-test='job-location']"          # ? needs-credentials
+job_experience: "span[data-test='experience']"          # ? needs-credentials
+job_url: "a[data-test='job-title']"                     # ? needs-credentials: read href attr
+job_snippet: "p[data-test='job-description']"           # ? needs-credentials
+next_page: "a[rel='next'], button[data-test='next-page']" # ? needs-credentials
+
+# Job detail / apply flow
+apply_button: "button[data-test='apply-button'], a[data-test='apply-button']" # ? needs-credentials
+already_applied: "span[data-test='applied-status']"     # ? needs-credentials
+apply_success: "div[data-test='application-success']"   # ? needs-credentials
+
+# Minimal form (some Cutshort jobs)
+apply_form: "form[data-test='apply-form'], div[data-test='apply-modal']" # ? needs-credentials
+form_input_text: "input[type='text']"                   # ? needs-credentials
+form_label: "label"                                     # ? needs-credentials
+form_textarea: "textarea"                               # ? needs-credentials: custom question — auto-Yellow
+resume_upload: "input[type='file']"                     # ? needs-credentials
+form_submit: "button[type='submit'], button[data-test='submit-application']" # ? needs-credentials
+
+# Navigation / logout
+profile_menu: "button[data-test='user-menu'], img[alt*='avatar'], nav a[href*='/settings']" # ? needs-credentials: avatar/menu trigger in top nav
+logout_link: "a[data-test='logout'], a[href*='/logout'], button[data-test='logout']"         # ? needs-credentials: sign-out link inside avatar dropdown

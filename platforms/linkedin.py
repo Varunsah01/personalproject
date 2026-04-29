@@ -7,10 +7,8 @@ Easy Apply only — "Apply on company website" redirects are skipped.
 Multi-step modal flow: the bot walks each step, checks for essay
 questions or unrecognised fields, and demotes to Yellow if found.
 
-Selector strategy: all CSS selectors are class constants at the top.
-They WILL break when LinkedIn ships UI changes — update them here,
-nowhere else. Each selector has a comment with what it targets and
-when it was last verified.
+Selectors live in platforms/selectors/linkedin.yaml (guidelines.md §4.4).
+Edit the YAML to fix broken selectors; call self.sel.reload() to hot-patch.
 """
 
 from __future__ import annotations
@@ -28,92 +26,43 @@ from pathlib import Path
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from core.browser import create_browser_context, human_type
+from core.browser import create_browser_context, human_click, human_type, is_bot_challenged
 from core.logger import LogEntry, count_today, init_log, is_duplicate, log_application
 from core.scorer import Job, classify_tier, score_job, should_apply
+from core.selectors import SelectorStore
+from core.types import BotConfig
 from platforms.base import BasePlatform
 
 logger = logging.getLogger(__name__)
 
 
-# ── Selectors ──────────────────────────────────────────────────────────
-# Verification status per selector:
-#   ✓ verified 2026-04-28 — confirmed present on live page
-#   ? needs-credentials — page is post-login; verify on next authenticated run
-#   NOTE — structural finding from DOM inspection
+# ── URLs ──────────────────────────────────────────────────────────────
+# Selectors have moved to platforms/selectors/linkedin.yaml.
 
-# Login page
 LOGIN_URL = "https://www.linkedin.com/login"
-SEL_LOGIN_EMAIL = "input#username"                        # verified 2026-04-28: email/phone input on login page
-SEL_LOGIN_PASSWORD = "input#password"                     # verified 2026-04-28: password input on login page
-SEL_LOGIN_SUBMIT = "button[type='submit']"                # verified 2026-04-28: "Sign in" button
-SEL_LOGIN_SUCCESS = "div.feed-identity-module"            # ? needs-credentials: element visible only when logged in (feed sidebar profile card)
-SEL_HUMAN_CHECK = "div#challenge"                         # verified 2026-04-28: not present on normal login — correct sentinel for the checkpoint page at /checkpoint/...
-
-# Search results page
-# LinkedIn job search URL: /jobs/search/?keywords=X&location=Y&f_AL=true (Easy Apply filter)
 SEARCH_URL_TEMPLATE = (
     "https://www.linkedin.com/jobs/search/"
     "?keywords={keyword}"
     "&location={location}"
-    "&f_AL=true"                                          # Easy Apply filter — only show Easy Apply jobs
-    "&f_E=2%2C3%2C4"                                      # Experience level: entry(2), associate(3), mid-senior(4)
-    "&f_TPR=r604800"                                       # Time posted: past week (604800 seconds)
-    "&sortBy=DD"                                           # Sort by date (most recent first)
-    "&start={offset}"                                      # Pagination offset (0, 25, 50, ...)
+    "&f_AL=true"            # Easy Apply filter
+    "&f_E=2%2C3%2C4"        # Experience level: entry, associate, mid-senior
+    "&f_TPR=r604800"         # Time posted: past week
+    "&sortBy=DD"             # Sort by date
+    "&start={offset}"        # Pagination offset (0, 25, 50, …)
 )
-SEL_JOB_CARD = "div.job-card-container"                   # ? needs-credentials: each job listing card in search results
-SEL_JOB_TITLE = "a.job-card-list__title"                  # ? needs-credentials: job title link inside card
-SEL_JOB_COMPANY = "span.job-card-container__primary-description"  # ? needs-credentials: company name text
-SEL_JOB_LOCATION = "li.job-card-container__metadata-item" # ? needs-credentials: location text (first metadata item)
-SEL_JOB_EXPERIENCE = ""                                   # LinkedIn doesn't show experience on card; parsed from JD page instead
-SEL_JOB_URL = "a.job-card-list__title"                    # ? needs-credentials: same as title; read href attr
-SEL_JOB_SNIPPET = "div.job-card-list__description"        # ? needs-credentials: snippet text below title (if present)
-SEL_NEXT_PAGE = "button[aria-label='Next']"               # ? needs-credentials: pagination next button. LinkedIn uses offset-based pagination, not page numbers.
-
-# Job detail panel (right side of search results, or standalone page)
-SEL_EASY_APPLY_BUTTON = "button.jobs-apply-button"        # ? needs-credentials: "Easy Apply" button with LinkedIn logo icon. Contains span with text "Easy Apply".
-SEL_EXTERNAL_APPLY_BUTTON = "button.jobs-apply-button--external"  # ? needs-credentials: "Apply" button that links to company website (no "Easy" prefix). Must detect and SKIP.
-SEL_ALREADY_APPLIED = "span.artdeco-inline-feedback"      # ? needs-credentials: "Applied" badge / "You applied on..." text shown when already applied
-SEL_JD_EXPERIENCE = "span.job-criteria__text"             # ? needs-credentials: experience requirement in job criteria section (e.g. "2-4 years")
-
-# Easy Apply modal (multi-step)
-SEL_MODAL_CONTAINER = "div.jobs-easy-apply-modal"         # ? needs-credentials: the modal overlay container
-SEL_MODAL_STEP_INDICATOR = "span.jobs-easy-apply-modal__page-count"  # ? needs-credentials: "Step 1 of 3" text
-SEL_MODAL_NEXT_BUTTON = "button[aria-label='Continue to next step']"  # ? needs-credentials: "Next" button between steps
-SEL_MODAL_REVIEW_BUTTON = "button[aria-label='Review your application']"  # ? needs-credentials: "Review" button on penultimate step
-SEL_MODAL_SUBMIT_BUTTON = "button[aria-label='Submit application']"  # ? needs-credentials: final "Submit application" button
-SEL_MODAL_CLOSE_BUTTON = "button[aria-label='Dismiss']"   # ? needs-credentials: X button to close modal
-SEL_MODAL_DISCARD_BUTTON = "button[data-test-modal-close-btn]"  # ? needs-credentials: "Discard" button in "discard application?" confirmation dialog
-
-# Modal form fields
-SEL_MODAL_INPUT_TEXT = "input[type='text']"                # ? needs-credentials: standard text inputs inside modal
-SEL_MODAL_INPUT_SELECT = "select"                          # ? needs-credentials: dropdown selects inside modal
-SEL_MODAL_INPUT_RADIO = "fieldset input[type='radio']"     # ? needs-credentials: radio button groups
-SEL_MODAL_TEXTAREA = "textarea"                            # ? needs-credentials: multi-line text areas (essay questions)
-SEL_MODAL_LABEL = "label"                                  # ? needs-credentials: form field labels
-SEL_MODAL_QUESTION_TEXT = "span.fb-form-element-label"     # ? needs-credentials: the question/label text above each field
-SEL_RESUME_UPLOAD = "input[type='file']"                   # ? needs-credentials: hidden file input for resume upload
-SEL_MODAL_ERROR = "div.artdeco-inline-feedback--error"     # ? needs-credentials: inline validation error messages
-
-# Post-apply confirmation
-SEL_APPLY_SUCCESS_TOAST = "div.artdeco-toast-item--visible"  # ? needs-credentials: success toast notification ("Your application was sent")
-
-# Logout
-SEL_PROFILE_MENU = "button.global-nav__primary-link--me"  # ? needs-credentials: "Me" dropdown in top nav
-SEL_LOGOUT_LINK = "a[href*='logout']"                     # ? needs-credentials: "Sign Out" link in the Me dropdown
 
 
-# ── Config ─────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────
 
 MAX_PAGES_PER_KEYWORD = 5         # CLAUDE.md §6
 JOBS_PER_PAGE = 25                # LinkedIn shows 25 results per page
-APPLY_DELAY = (10, 25)            # seconds between applications — LinkedIn-specific, longer than Naukri's (5, 15)
+APPLY_DELAY = (10, 25)            # seconds between applications — LinkedIn-specific
+JOB_VIEW_DELAY = (8, 15)         # min 8s between job-detail views
 PAGE_DELAY = (30, 90)             # seconds between search result pages (guidelines.md §3.2)
 SELECTOR_RETRY_DELAY = 3          # seconds before retrying a missing selector (guidelines.md §3.4)
 MAX_SELECTOR_FAILURES = 5         # per session before stopping platform (guidelines.md §3.4)
 NETWORK_RETRY_DELAYS = [5, 15]    # exponential backoff for network errors (guidelines.md §3.4)
-MAX_SESSION_SECONDS = 90 * 60     # 90 minutes per platform (guidelines.md §3.3)
+MAX_SESSION_SECONDS = 60 * 60     # 60 minutes per platform — stricter than the default 90
 LONG_TEXT_THRESHOLD = 100         # chars — fields longer than this demote to Yellow (guidelines.md §3.2)
 MAX_MODAL_STEPS = 10              # safety valve: bail out if modal has more steps than this
 
@@ -138,7 +87,6 @@ STANDARD_FIELD_NAMES = {
 }
 
 # Essay / long-answer patterns that auto-demote to Yellow.
-# If any question label matches these, the application is queued for review.
 _ESSAY_DEMOTE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"why\s+(?:are\s+you\s+interested|do\s+you\s+want)", re.IGNORECASE),
     re.compile(r"tell\s+us\s+about\s+yourself", re.IGNORECASE),
@@ -161,49 +109,31 @@ class LinkedInPlatform(BasePlatform):
     unrecognised or essay-type question demotes the application to Yellow.
 
     Args:
-        log_path: Path to applications_log.csv.
-        headless: Run browser in headless mode.
-        dry_run: Score and log but never click Apply.
+        config: BotConfig with shared settings (log path, caps, headless, etc.).
     """
 
     PLATFORM_NAME = "linkedin"
 
-    def __init__(
-        self,
-        log_path: Path | str = "data/applications_log.csv",
-        headless: bool = True,
-        dry_run: bool = False,
-    ) -> None:
-        self.log_path = Path(log_path)
-        self.headless = headless
-        self.dry_run = dry_run
+    def __init__(self, config: BotConfig) -> None:
+        super().__init__(config)
 
-        # Loaded from .env at runtime
+        # Platform-specific credentials (from .env)
         self.email = os.getenv("LINKEDIN_EMAIL", "")
         self.password = os.getenv("LINKEDIN_PASSWORD", "")
-        self.daily_cap = int(os.getenv("DAILY_CAP_LINKEDIN", "40"))
 
-        # Standard answers for form filling
-        self.standard_answers: dict[str, str] = {
-            "name": "Varun Sah",
+        # Selector registry — backed by platforms/selectors/linkedin.yaml
+        self.sel = SelectorStore("linkedin")
+
+        # Augment shared standard_answers with LinkedIn-specific fields
+        self.standard_answers.update({
             "email": self.email,
-            "phone": "+91-8595062552",
-            "location": "Delhi NCR",
-            "notice_period": "Immediate",
-            "years_of_experience": "4",
             "linkedin": "https://www.linkedin.com/in/varun-sah/",
             "current_ctc": os.getenv("LINKEDIN_CURRENT_CTC", ""),
             "expected_ctc": os.getenv("LINKEDIN_EXPECTED_CTC", ""),
-        }
+        })
 
-        # Session state
-        self._page: Page | None = None
-        self._context = None
-        self._playwright = None
-        self._selector_failures = 0
-        self._session_start = 0.0
+        # LinkedIn-specific state
         self._human_check_detected = False
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
 
     # ── BasePlatform interface ─────────────────────────────────────────
 
@@ -215,7 +145,7 @@ class LinkedInPlatform(BasePlatform):
 
         Returns:
             True if login succeeded, False otherwise.
-            On "Are you a human?" challenge, logs auth_challenge and returns False.
+            On human-verification challenge, logs auth_challenge and returns False.
         """
         if not self.email or not self.password:
             logger.error("LINKEDIN_EMAIL or LINKEDIN_PASSWORD not set in .env")
@@ -242,15 +172,31 @@ class LinkedInPlatform(BasePlatform):
         if await self._detect_human_check():
             return False
 
-        # Fill credentials — use human_type for the password field
+        # Fill credentials — human_type for both fields, human_click for submit
         try:
-            await self._page.fill(SEL_LOGIN_EMAIL, self.email)
-            await human_type(self._page, SEL_LOGIN_PASSWORD, self.password)
-            await self._page.click(SEL_LOGIN_SUBMIT)
+            await human_type(self._page, self.sel.login_email, self.email)
+            await human_type(self._page, self.sel.login_password, self.password)
+            await human_click(self._page, self.sel.login_submit)
             await self._page.wait_for_load_state("networkidle", timeout=15_000)
         except PlaywrightTimeout:
             logger.error("Login form interaction timed out")
             self._log_error("auth_failed: timeout")
+            return False
+
+        # Wait up to 8s for feed indicator OR checkpoint page
+        try:
+            await self._page.wait_for_selector(
+                f"{self.sel.login_success}, {self.sel.human_check}",
+                timeout=8_000,
+            )
+        except PlaywrightTimeout:
+            pass  # fall through to explicit checks below
+
+        # Post-login: check for bot challenge via core.browser
+        if await is_bot_challenged(self._page):
+            await self._handle_bot_detection()
+            self._human_check_detected = True
+            self._log_error("auth_challenge: bot_detection")
             return False
 
         # Post-login human verification check
@@ -273,8 +219,7 @@ class LinkedInPlatform(BasePlatform):
 
         Args:
             keyword: Search query, e.g. "growth manager".
-            filters: Dict with 'locations' (list[str]), 'experience_min' (int),
-                     'experience_max' (int).
+            filters: Dict with 'locations' (list[str]).
 
         Yields:
             Job objects parsed from search result cards.
@@ -283,7 +228,7 @@ class LinkedInPlatform(BasePlatform):
             logger.error("search() called before login()")
             return
 
-        location = filters.get("locations", [""])[0] if filters.get("locations") else ""
+        location = "India"  # LinkedIn Easy Apply — broad India scope
 
         for page_num in range(MAX_PAGES_PER_KEYWORD):
             if self._should_stop():
@@ -309,8 +254,15 @@ class LinkedInPlatform(BasePlatform):
             if await self._detect_human_check():
                 return
 
+            # Wait for job cards to render
+            try:
+                await self._page.wait_for_selector(self.sel.job_card, timeout=10_000)
+            except PlaywrightTimeout:
+                logger.info("No job cards found on page %d — end of results", page_num + 1)
+                break
+
             # Parse job cards from this page
-            job_cards = await self._page.query_selector_all(SEL_JOB_CARD)
+            job_cards = await self._page.query_selector_all(self.sel.job_card)
             if not job_cards:
                 logger.info("No job cards found on page %d — end of results", page_num + 1)
                 break
@@ -323,7 +275,7 @@ class LinkedInPlatform(BasePlatform):
                     yield job
 
             # Check for next page
-            next_button = await self._page.query_selector(SEL_NEXT_PAGE)
+            next_button = await self._page.query_selector(self.sel.next_page)
             if not next_button:
                 logger.info("No next page button — end of results for '%s'", keyword)
                 break
@@ -348,16 +300,20 @@ class LinkedInPlatform(BasePlatform):
         Returns a dict:
             {
                 "path": "easy_apply"|"external_apply"|"already_applied"|"no_apply_button"|"unknown",
-                "steps": list[list[dict]],      # parsed fields per step
-                "questions": list[dict],         # flattened list of all questions
-                "has_unrecognized": bool,         # True if any essay/unrecognized question
-                "pre_filled_count": int,          # number of fields already filled by LinkedIn
+                "steps": list[list[dict]],
+                "questions": list[dict],
+                "has_unrecognized": bool,
+                "pre_filled_count": int,
             }
         """
         if self._page is None:
             raise RuntimeError("open_application_form() called before login()")
 
         job_url = job.posted_date  # URL stashed in posted_date
+
+        # Min 8s between job-detail views
+        await asyncio.sleep(random.uniform(*JOB_VIEW_DELAY))
+
         await self._page.goto(job_url, wait_until="domcontentloaded", timeout=30_000)
 
         # Check for human verification
@@ -365,15 +321,15 @@ class LinkedInPlatform(BasePlatform):
             return {"path": "unknown", "steps": [], "questions": [], "has_unrecognized": False, "pre_filled_count": 0}
 
         # Check if already applied
-        already_applied = await self._page.query_selector(SEL_ALREADY_APPLIED)
+        already_applied = await self._page.query_selector(self.sel.already_applied)
         if already_applied:
             text = (await already_applied.inner_text()).strip().lower()
             if "applied" in text:
                 return {"path": "already_applied", "steps": [], "questions": [], "has_unrecognized": False, "pre_filled_count": 0}
 
         # Check for Easy Apply button vs external apply
-        easy_apply_btn = await self._page.query_selector(SEL_EASY_APPLY_BUTTON)
-        external_btn = await self._page.query_selector(SEL_EXTERNAL_APPLY_BUTTON)
+        easy_apply_btn = await self._page.query_selector(self.sel.easy_apply_button)
+        external_btn = await self._page.query_selector(self.sel.external_apply_button)
 
         if external_btn and not easy_apply_btn:
             return {"path": "external_apply", "steps": [], "questions": [], "has_unrecognized": False, "pre_filled_count": 0}
@@ -383,18 +339,18 @@ class LinkedInPlatform(BasePlatform):
 
         # Click Easy Apply — modal should appear
         try:
-            await easy_apply_btn.click(timeout=10_000)
+            await human_click(self._page, self.sel.easy_apply_button)
         except PlaywrightTimeout:
             await asyncio.sleep(SELECTOR_RETRY_DELAY)
             try:
-                await easy_apply_btn.click(timeout=10_000)
+                await human_click(self._page, self.sel.easy_apply_button)
             except PlaywrightTimeout:
                 self._selector_failures += 1
                 raise
 
         # Wait for the modal to appear
         try:
-            await self._page.wait_for_selector(SEL_MODAL_CONTAINER, timeout=10_000)
+            await self._page.wait_for_selector(self.sel.modal_container, timeout=10_000)
         except PlaywrightTimeout:
             return {"path": "unknown", "steps": [], "questions": [], "has_unrecognized": False, "pre_filled_count": 0}
 
@@ -415,31 +371,26 @@ class LinkedInPlatform(BasePlatform):
                 if self._is_essay_question(field.get("label", "")):
                     has_unrecognized = True
                 elif field["type"] == "textarea":
-                    # Any textarea is suspicious — likely a custom question
                     has_unrecognized = True
                 elif not self._is_recognized_question(field.get("label", "")):
-                    if field["type"] != "file":  # file upload is always recognised
+                    if field["type"] != "file":
                         has_unrecognized = True
 
             # Check if there's a Next button (more steps) or Review/Submit (last step)
-            next_btn = await self._page.query_selector(SEL_MODAL_NEXT_BUTTON)
-            review_btn = await self._page.query_selector(SEL_MODAL_REVIEW_BUTTON)
-            submit_btn = await self._page.query_selector(SEL_MODAL_SUBMIT_BUTTON)
+            next_btn = await self._page.query_selector(self.sel.modal_next_button)
+            review_btn = await self._page.query_selector(self.sel.modal_review_button)
+            submit_btn = await self._page.query_selector(self.sel.modal_submit_button)
 
             if next_btn:
-                # More steps — advance to see what's next (for inspection only)
-                # We don't fill anything yet; just cataloguing
                 try:
                     await next_btn.click(timeout=5_000)
-                    await asyncio.sleep(1)  # wait for next step to render
+                    await asyncio.sleep(1)
                 except PlaywrightTimeout:
                     logger.warning("Failed to advance to next modal step")
                     break
             elif review_btn or submit_btn:
-                # Last step — done cataloguing
                 break
             else:
-                # No navigation buttons found — modal may be single-step
                 break
 
         return {
@@ -461,7 +412,7 @@ class LinkedInPlatform(BasePlatform):
 
         # Text inputs
         text_inputs = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_MODAL_INPUT_TEXT}"
+            f"{self.sel.modal_container} {self.sel.modal_input_text}"
         )
         for inp in text_inputs:
             label = await self._get_field_label(inp)
@@ -470,22 +421,20 @@ class LinkedInPlatform(BasePlatform):
 
         # Select dropdowns
         selects = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_MODAL_INPUT_SELECT}"
+            f"{self.sel.modal_container} {self.sel.modal_input_select}"
         )
-        for sel in selects:
-            label = await self._get_field_label(sel)
-            # Get selected option text
-            selected = await sel.evaluate("el => el.options[el.selectedIndex]?.text || ''")
-            options = await sel.evaluate(
+        for sel_el in selects:
+            label = await self._get_field_label(sel_el)
+            selected = await sel_el.evaluate("el => el.options[el.selectedIndex]?.text || ''")
+            options = await sel_el.evaluate(
                 "el => Array.from(el.options).map(o => o.text).filter(t => t.trim())"
             )
             fields.append({"label": label, "type": "select", "value": selected, "options": options})
 
         # Radio button groups
         radios = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_MODAL_INPUT_RADIO}"
+            f"{self.sel.modal_container} {self.sel.modal_input_radio}"
         )
-        # Group radios by name attribute
         radio_groups: dict[str, list] = {}
         for radio in radios:
             name = await radio.get_attribute("name") or "unknown"
@@ -514,9 +463,9 @@ class LinkedInPlatform(BasePlatform):
                 "options": option_texts,
             })
 
-        # Textareas (essay questions — these are the danger zone)
+        # Textareas (essay questions — danger zone)
         textareas = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_MODAL_TEXTAREA}"
+            f"{self.sel.modal_container} {self.sel.modal_textarea}"
         )
         for ta in textareas:
             label = await self._get_field_label(ta)
@@ -525,7 +474,7 @@ class LinkedInPlatform(BasePlatform):
 
         # File upload inputs
         file_inputs = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_RESUME_UPLOAD}"
+            f"{self.sel.modal_container} {self.sel.resume_upload}"
         )
         for fi in file_inputs:
             label = await self._get_field_label(fi)
@@ -536,22 +485,19 @@ class LinkedInPlatform(BasePlatform):
     async def _get_field_label(self, element) -> str:
         """Extract the label text for a form field element.
 
-        Tries: aria-label attr → associated <label> via id → closest label ancestor
-        → preceding sibling label → question text span.
+        Tries: aria-label → associated <label> via id → closest label ancestor
+        → question text span.
         """
-        # Try aria-label first
         aria = await element.get_attribute("aria-label")
         if aria:
             return aria.strip()
 
-        # Try associated label via id
         el_id = await element.get_attribute("id")
         if el_id:
             label_el = await self._page.query_selector(f"label[for='{el_id}']")
             if label_el:
                 return (await label_el.inner_text()).strip()
 
-        # Try question text span nearby
         try:
             label_text = await element.evaluate("""el => {
                 const container = el.closest('.fb-form-element, .jobs-easy-apply-form-section__grouping');
@@ -611,7 +557,7 @@ class LinkedInPlatform(BasePlatform):
           re-fill pre-populated ones), upload resume, click through to Submit.
 
         Returns:
-            {"status": "applied"|"applied_unconfirmed"|"error", "notes": str}
+            {"status": "applied"|"applied_unconfirmed"|"error"|"skipped", "notes": str}
         """
         if self._page is None:
             raise RuntimeError("fill_and_submit() called before login()")
@@ -628,34 +574,30 @@ class LinkedInPlatform(BasePlatform):
             return {"status": "error", "notes": f"unknown form path: {path}"}
 
         # The modal was walked during open_application_form() for inspection.
-        # Now we need to close and re-open it to fill from step 1.
-        # Close the current modal first.
+        # Close and re-open to fill from step 1.
         await self._close_modal()
         await asyncio.sleep(1)
 
         # Re-click Easy Apply to start fresh
-        easy_apply_btn = await self._page.query_selector(SEL_EASY_APPLY_BUTTON)
+        easy_apply_btn = await self._page.query_selector(self.sel.easy_apply_button)
         if not easy_apply_btn:
             return {"status": "error", "notes": "Easy Apply button not found on re-open"}
 
         try:
-            await easy_apply_btn.click(timeout=10_000)
-            await self._page.wait_for_selector(SEL_MODAL_CONTAINER, timeout=10_000)
+            await human_click(self._page, self.sel.easy_apply_button)
+            await self._page.wait_for_selector(self.sel.modal_container, timeout=10_000)
         except PlaywrightTimeout:
             return {"status": "error", "notes": "modal did not reappear on re-click"}
 
         # Walk each step: fill empty fields, skip pre-filled, advance
         for step_num in range(MAX_MODAL_STEPS):
-            # Fill fields in this step
             await self._fill_modal_step(answers)
 
-            # Determine which button to click
-            submit_btn = await self._page.query_selector(SEL_MODAL_SUBMIT_BUTTON)
-            review_btn = await self._page.query_selector(SEL_MODAL_REVIEW_BUTTON)
-            next_btn = await self._page.query_selector(SEL_MODAL_NEXT_BUTTON)
+            submit_btn = await self._page.query_selector(self.sel.modal_submit_button)
+            review_btn = await self._page.query_selector(self.sel.modal_review_button)
+            next_btn = await self._page.query_selector(self.sel.modal_next_button)
 
             if submit_btn:
-                # Final step — submit
                 try:
                     await submit_btn.click(timeout=10_000)
                 except PlaywrightTimeout:
@@ -663,24 +605,22 @@ class LinkedInPlatform(BasePlatform):
                     return {"status": "error", "notes": "selector_broken: submit button"}
                 break
             elif review_btn:
-                # Penultimate step — click Review, which leads to Submit
                 try:
                     await review_btn.click(timeout=10_000)
                     await asyncio.sleep(1)
                 except PlaywrightTimeout:
                     self._selector_failures += 1
                     return {"status": "error", "notes": "selector_broken: review button"}
-                # After review, the submit button should appear
+                # After review, submit button should appear
                 try:
                     submit_btn = await self._page.wait_for_selector(
-                        SEL_MODAL_SUBMIT_BUTTON, timeout=5_000
+                        self.sel.modal_submit_button, timeout=5_000
                     )
                     await submit_btn.click(timeout=10_000)
                 except PlaywrightTimeout:
                     return {"status": "error", "notes": "submit button not found after review"}
                 break
             elif next_btn:
-                # More steps — advance
                 try:
                     await next_btn.click(timeout=5_000)
                     await asyncio.sleep(1)
@@ -688,7 +628,7 @@ class LinkedInPlatform(BasePlatform):
                     return {"status": "error", "notes": f"failed to advance past step {step_num + 1}"}
 
                 # Check for validation errors after advancing
-                error_el = await self._page.query_selector(SEL_MODAL_ERROR)
+                error_el = await self._page.query_selector(self.sel.modal_error)
                 if error_el:
                     error_text = (await error_el.inner_text()).strip()
                     return {"status": "error", "notes": f"validation error at step {step_num + 1}: {error_text}"}
@@ -697,7 +637,7 @@ class LinkedInPlatform(BasePlatform):
 
         # Wait for success confirmation
         try:
-            await self._page.wait_for_selector(SEL_APPLY_SUCCESS_TOAST, timeout=10_000)
+            await self._page.wait_for_selector(self.sel.apply_success_toast, timeout=10_000)
             return {"status": "applied", "notes": ""}
         except PlaywrightTimeout:
             return {"status": "applied_unconfirmed", "notes": "no success toast after submit"}
@@ -711,38 +651,38 @@ class LinkedInPlatform(BasePlatform):
         """
         # Fill empty text inputs
         text_inputs = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_MODAL_INPUT_TEXT}"
+            f"{self.sel.modal_container} {self.sel.modal_input_text}"
         )
         for inp in text_inputs:
             value = await inp.get_attribute("value") or ""
             if value.strip():
                 continue  # pre-filled — don't touch
             label = await self._get_field_label(inp)
-            answer = self._match_standard_answer(label, answers)
+            answer = self._match_standard_answer(label)
             if answer:
-                await human_type(self._page, f"#{await inp.get_attribute('id')}" if await inp.get_attribute('id') else SEL_MODAL_INPUT_TEXT, answer)
+                el_id = await inp.get_attribute("id")
+                selector = f"#{el_id}" if el_id else f"{self.sel.modal_container} {self.sel.modal_input_text}"
+                await human_type(self._page, selector, answer)
 
-        # Fill empty selects — pick the best option
+        # Fill empty selects
         selects = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_MODAL_INPUT_SELECT}"
+            f"{self.sel.modal_container} {self.sel.modal_input_select}"
         )
-        for sel in selects:
-            selected_idx = await sel.evaluate("el => el.selectedIndex")
+        for sel_el in selects:
+            selected_idx = await sel_el.evaluate("el => el.selectedIndex")
             if selected_idx > 0:
                 continue  # already has a non-default selection
-            label = await self._get_field_label(sel)
-            answer = self._match_standard_answer(label, {})
-            # For selects, try to pick the best option by keyword matching
-            options = await sel.evaluate(
+            label = await self._get_field_label(sel_el)
+            options = await sel_el.evaluate(
                 "el => Array.from(el.options).map((o, i) => ({value: o.value, text: o.text, index: i}))"
             )
             best_idx = self._pick_select_option(label, options)
             if best_idx is not None:
-                await sel.select_option(index=best_idx)
+                await sel_el.select_option(index=best_idx)
 
         # Upload resume if file input is present and empty
         file_inputs = await self._page.query_selector_all(
-            f"{SEL_MODAL_CONTAINER} {SEL_RESUME_UPLOAD}"
+            f"{self.sel.modal_container} {self.sel.resume_upload}"
         )
         resume_path = Path("Varun_Sah_CV.pdf")
         if resume_path.exists():
@@ -752,22 +692,16 @@ class LinkedInPlatform(BasePlatform):
                 except Exception as exc:
                     logger.debug("Resume upload skipped or failed: %s", exc)
 
-        # Fill textareas from human-reviewed custom answers (review-queue path only).
-        # SEL_MODAL_TEXTAREA is TODO-marked — verify against a live modal with an essay field.
+        # Fill textareas from human-reviewed custom answers (review-queue path only)
         custom_answers = answers.get("_custom", {})
         if custom_answers:
             textareas = await self._page.query_selector_all(
-                f"{SEL_MODAL_CONTAINER} {SEL_MODAL_TEXTAREA}"
+                f"{self.sel.modal_container} {self.sel.modal_textarea}"
             )
             for ta in textareas:
-                current = await ta.input_value() if await ta.get_attribute("type") else ""
-                try:
-                    current = current or await ta.inner_text() or ""
-                except Exception as exc:
-                    logger.debug("Could not read textarea inner_text: %s", exc)
-                    current = ""
+                current = await ta.input_value()
                 if current.strip():
-                    continue  # pre-filled — don't touch
+                    continue  # pre-filled
                 label = await self._get_field_label(ta)
                 answer = custom_answers.get(label.lower())
                 if answer:
@@ -777,8 +711,8 @@ class LinkedInPlatform(BasePlatform):
                     except Exception as exc:
                         logger.debug("Failed to fill textarea '%s': %s", label, exc)
 
-    def _match_standard_answer(self, label: str, answers: dict) -> str | None:
-        """Match a field label to a standard answer from the answers dict."""
+    def _match_standard_answer(self, label: str) -> str | None:
+        """Match a field label to a standard answer."""
         label_lower = label.lower()
 
         if any(kw in label_lower for kw in ("first name", "full name", "name")):
@@ -809,20 +743,17 @@ class LinkedInPlatform(BasePlatform):
         """
         label_lower = label.lower()
 
-        # Location-related selects
         if any(kw in label_lower for kw in ("city", "location", "country")):
             for opt in options:
                 opt_lower = opt["text"].lower()
                 if any(loc in opt_lower for loc in ["delhi", "india", "ncr", "remote"]):
                     return opt["index"]
 
-        # Experience-related selects
         if any(kw in label_lower for kw in ("experience", "years")):
             for opt in options:
                 if any(n in opt["text"] for n in ["3", "4", "2"]):
                     return opt["index"]
 
-        # Notice period selects
         if "notice" in label_lower:
             for opt in options:
                 opt_lower = opt["text"].lower()
@@ -831,54 +762,17 @@ class LinkedInPlatform(BasePlatform):
 
         return None
 
-    def _match_radio_answer(self, question_lower: str, options: list[str]) -> str | None:
-        """Pick the best radio option for a known question.
-
-        Returns the option text to click, or None if no match.
-        """
-        # Notice period
-        if "notice period" in question_lower:
-            preferred = ["immediate", "15 days or less", "serving notice period"]
-            for pref in preferred:
-                for opt in options:
-                    if pref in opt.lower():
-                        return opt
-            return options[0] if options else None
-
-        # Experience
-        if "experience" in question_lower or "years" in question_lower:
-            for opt in options:
-                if "3" in opt or "4" in opt or "2" in opt:
-                    return opt
-            return options[0] if options else None
-
-        # Location / relocation
-        if "location" in question_lower or "city" in question_lower or "relocate" in question_lower:
-            for opt in options:
-                opt_lower = opt.lower()
-                if any(loc in opt_lower for loc in ["delhi", "ncr", "gurgaon", "noida", "remote", "yes"]):
-                    return opt
-            return options[0] if options else None
-
-        # CTC / salary
-        if "ctc" in question_lower or "salary" in question_lower:
-            return options[0] if options else None
-
-        # Default: first option
-        return options[0] if options else None
-
     async def _close_modal(self) -> None:
         """Close the Easy Apply modal without submitting.
 
         Clicks the X button, then handles the "Discard application?" confirmation.
         """
         try:
-            close_btn = await self._page.query_selector(SEL_MODAL_CLOSE_BUTTON)
+            close_btn = await self._page.query_selector(self.sel.modal_close_button)
             if close_btn:
                 await close_btn.click(timeout=5_000)
-                # LinkedIn shows "Discard application?" confirmation
                 await asyncio.sleep(0.5)
-                discard_btn = await self._page.query_selector(SEL_MODAL_DISCARD_BUTTON)
+                discard_btn = await self._page.query_selector(self.sel.modal_discard_button)
                 if discard_btn:
                     await discard_btn.click(timeout=5_000)
         except PlaywrightTimeout:
@@ -888,9 +782,14 @@ class LinkedInPlatform(BasePlatform):
         """Log out of LinkedIn and close browser context."""
         if self._page is not None:
             try:
-                await self._page.click(SEL_PROFILE_MENU, timeout=5_000)
+                await self._page.click(self.sel.profile_menu, timeout=5_000)
                 await asyncio.sleep(0.5)
-                await self._page.click(SEL_LOGOUT_LINK, timeout=5_000)
+                await self._page.click(self.sel.logout_link, timeout=5_000)
+                # Wait briefly for login page to confirm logout
+                try:
+                    await self._page.wait_for_url("**/login**", timeout=5_000)
+                except PlaywrightTimeout:
+                    pass
                 logger.info("LinkedIn logout successful")
             except PlaywrightTimeout:
                 logger.warning("Logout selectors failed — closing browser anyway")
@@ -901,7 +800,6 @@ class LinkedInPlatform(BasePlatform):
             await self._playwright.stop()
 
     # ── Orchestration ──────────────────────────────────────────────────
-    # Ties together search → score → dedupe → cap → apply for one run.
 
     async def run(self, keywords: list[str], filters: dict) -> dict[str, int]:
         """Full run: login → search each keyword → process each job → logout.
@@ -911,13 +809,13 @@ class LinkedInPlatform(BasePlatform):
         """
         import time
         self._session_start = time.monotonic()
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        self._stats.reset()
 
         init_log(self.log_path)
 
         logged_in = await self.login()
         if not logged_in:
-            return self._stats
+            return self._stats.as_dict()
 
         try:
             for keyword in keywords:
@@ -932,8 +830,8 @@ class LinkedInPlatform(BasePlatform):
         finally:
             await self.logout()
 
-        logger.info("[linkedin] Run complete — %s", self._stats)
-        return self._stats
+        logger.info("[linkedin] Run complete — %s", self._stats.as_dict())
+        return self._stats.as_dict()
 
     async def _process_job(self, job: Job) -> None:
         """Per-job flow: dedupe → hard-skip → score → threshold → cap → apply.
@@ -995,7 +893,7 @@ class LinkedInPlatform(BasePlatform):
 
         path = form["path"]
 
-        # External apply — skip (Easy Apply only per user instruction)
+        # External apply — skip (Easy Apply only)
         if path == "external_apply":
             self._record(job, fit_score, "skipped", "external apply (company website)")
             return
@@ -1030,7 +928,6 @@ class LinkedInPlatform(BasePlatform):
                     for q in unrecognized
                 ],
             )
-            # Close modal without submitting
             await self._close_modal()
             return
 
@@ -1052,19 +949,19 @@ class LinkedInPlatform(BasePlatform):
     async def _is_logged_in(self) -> bool:
         """Check if the page shows a logged-in state."""
         try:
-            await self._page.wait_for_selector(SEL_LOGIN_SUCCESS, timeout=3_000)
+            await self._page.wait_for_selector(self.sel.login_success, timeout=3_000)
             return True
         except PlaywrightTimeout:
             return False
 
     async def _detect_human_check(self) -> bool:
-        """Check for LinkedIn's "Are you a human?" verification challenge.
+        """Check for LinkedIn's human-verification challenge.
 
         If detected, logs auth_challenge and sets the kill flag. The error-rate
         pre-flight in apply.py will prevent re-running for 24h.
         """
         try:
-            await self._page.wait_for_selector(SEL_HUMAN_CHECK, timeout=2_000)
+            await self._page.wait_for_selector(self.sel.human_check, timeout=2_000)
         except PlaywrightTimeout:
             return False
 
@@ -1077,29 +974,27 @@ class LinkedInPlatform(BasePlatform):
         """Extract a Job from a search result card element.
 
         Returns None if essential fields can't be parsed.
-        Stores job URL in posted_date for use in the apply flow.
         """
         try:
-            title = await card.query_selector(SEL_JOB_TITLE)
+            title = await card.query_selector(self.sel.job_title)
             title_text = (await title.inner_text()).strip() if title else ""
 
-            company = await card.query_selector(SEL_JOB_COMPANY)
+            company = await card.query_selector(self.sel.job_company)
             company_text = (await company.inner_text()).strip() if company else ""
 
-            location = await card.query_selector(SEL_JOB_LOCATION)
+            location = await card.query_selector(self.sel.job_location)
             location_text = (await location.inner_text()).strip() if location else ""
 
-            # LinkedIn doesn't show experience on the search card — leave blank,
-            # will be parsed from JD page if we open_application_form()
+            # LinkedIn doesn't show experience on the search card
             experience_text = ""
 
-            url_el = await card.query_selector(SEL_JOB_URL)
+            url_el = await card.query_selector(self.sel.job_url)
             url = (await url_el.get_attribute("href")) if url_el else ""
             # LinkedIn job URLs are relative; prepend base if needed
             if url and not url.startswith("http"):
                 url = f"https://www.linkedin.com{url}"
 
-            snippet = await card.query_selector(SEL_JOB_SNIPPET)
+            snippet = await card.query_selector(self.sel.job_snippet)
             snippet_text = (await snippet.inner_text()).strip() if snippet else ""
 
             if not title_text or not url:
@@ -1111,7 +1006,7 @@ class LinkedInPlatform(BasePlatform):
                 location=location_text,
                 experience_required=experience_text,
                 jd_text=snippet_text[:500],
-                posted_date=url,  # stash URL in posted_date until Job gets a url field
+                posted_date=url,  # stash URL in posted_date
             )
         except Exception as exc:
             logger.debug("Failed to parse job card: %s", exc)
@@ -1173,13 +1068,13 @@ class LinkedInPlatform(BasePlatform):
             role_title=job.title,
             experience_required=job.experience_required,
             location=job.location,
-            job_url=job.posted_date,  # URL stashed in posted_date
+            job_url=job.posted_date,
             fit_score=fit_score,
             status=status,
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats[status] = self._stats.get(status, 0) + 1
+        self._stats.increment(status)
         logger.debug("Recorded: %s at %s [%s] %s", job.title, job.company, status, notes)
 
     def _log_error(self, notes: str) -> None:
@@ -1199,7 +1094,7 @@ class LinkedInPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats["errored"] += 1
+        self._stats.errored += 1
 
     def _queue_for_review(
         self,
@@ -1216,7 +1111,6 @@ class LinkedInPlatform(BasePlatform):
         now = datetime.now(timezone.utc)
         expires = now + timedelta(days=5)
 
-        # Ensure the review queue CSV exists with headers
         if not REVIEW_QUEUE_PATH.exists():
             REVIEW_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(REVIEW_QUEUE_PATH, "w", newline="") as f:

@@ -1,0 +1,54 @@
+# LinkedIn CSS selectors.
+# Verification status:
+#   verified — confirmed present on live page 2026-04-28
+#   ? needs-credentials — post-login page; verify on next authenticated run
+# Edit ONLY this file when selectors break (guidelines.md §4.4).
+
+# Login page
+login_email: "input#username"                                   # verified 2026-04-28
+login_password: "input#password"                               # verified 2026-04-28
+login_submit: "button[type='submit']"                          # verified 2026-04-28
+login_success: "div.feed-identity-module"                      # ? needs-credentials: feed sidebar profile card
+human_check: "div#challenge"                                   # verified 2026-04-28: checkpoint page sentinel
+
+# Search results page
+job_card: "div.job-card-container"                             # ? needs-credentials
+job_title: "a.job-card-list__title"                            # ? needs-credentials
+job_company: "span.job-card-container__primary-description"    # ? needs-credentials
+job_location: "li.job-card-container__metadata-item"           # ? needs-credentials
+job_experience: ""                                             # LinkedIn doesn't show experience on card; parsed from JD page
+job_url: "a.job-card-list__title"                              # ? needs-credentials: read href attr
+job_snippet: "div.job-card-list__description"                  # ? needs-credentials
+next_page: "button[aria-label='Next']"                         # ? needs-credentials: offset-based pagination
+
+# Job detail panel
+easy_apply_button: "button.jobs-apply-button"                  # ? needs-credentials: "Easy Apply" button
+external_apply_button: "button.jobs-apply-button--external"    # ? needs-credentials: "Apply" to company site — SKIP
+already_applied: "span.artdeco-inline-feedback"                # ? needs-credentials: "Applied" badge
+jd_experience: "span.job-criteria__text"                       # ? needs-credentials: experience requirement in criteria section
+
+# Easy Apply modal
+modal_container: "div.jobs-easy-apply-modal"                   # ? needs-credentials
+modal_step_indicator: "span.jobs-easy-apply-modal__page-count" # ? needs-credentials: "Step 1 of 3" text
+modal_next_button: "button[aria-label='Continue to next step']" # ? needs-credentials
+modal_review_button: "button[aria-label='Review your application']" # ? needs-credentials
+modal_submit_button: "button[aria-label='Submit application']"  # ? needs-credentials
+modal_close_button: "button[aria-label='Dismiss']"             # ? needs-credentials
+modal_discard_button: "button[data-test-modal-close-btn]"      # ? needs-credentials: "Discard" in confirmation dialog
+
+# Modal form fields
+modal_input_text: "input[type='text']"                         # ? needs-credentials
+modal_input_select: "select"                                   # ? needs-credentials
+modal_input_radio: "fieldset input[type='radio']"              # ? needs-credentials
+modal_textarea: "textarea"                                     # ? needs-credentials
+modal_label: "label"                                           # ? needs-credentials
+modal_question_text: "span.fb-form-element-label"              # ? needs-credentials
+resume_upload: "input[type='file']"                            # ? needs-credentials
+modal_error: "div.artdeco-inline-feedback--error"              # ? needs-credentials
+
+# Post-apply confirmation
+apply_success_toast: "div.artdeco-toast-item--visible"         # ? needs-credentials: success toast
+
+# Logout
+profile_menu: "button.global-nav__primary-link--me"            # ? needs-credentials: "Me" dropdown
+logout_link: "a[href*='logout']"                               # ? needs-credentials: "Sign Out" link

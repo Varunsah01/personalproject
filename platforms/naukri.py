@@ -26,59 +26,19 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from core.browser import create_browser_context, human_type
 from core.logger import LogEntry, count_today, init_log, is_duplicate, log_application
 from core.scorer import Job, classify_tier, score_job, should_apply
+from core.selectors import SelectorStore
+from core.types import BotConfig
 from platforms.base import BasePlatform
 
 logger = logging.getLogger(__name__)
 
 
-# ── Selectors ──────────────────────────────────────────────────────────
-# Extracted from live Naukri DOM — verified 2026-04-28.
-# Each constant: what it points to, when last verified.
+# ── URLs ───────────────────────────────────────────────────────────────
+# Selectors have moved to platforms/selectors/naukri.yaml (guidelines.md §4.4).
+# Edit the YAML to fix broken selectors; call self.sel.reload() to hot-patch.
 
-# Login page
 LOGIN_URL = "https://www.naukri.com/nlogin/login"
-SEL_LOGIN_EMAIL = "input[placeholder*='Email']"       # UNVERIFIED — login page is React-rendered, redirects when logged in. Verify on first logged-out run.
-SEL_LOGIN_PASSWORD = "input[type='password']"          # UNVERIFIED — same reason as above
-SEL_LOGIN_SUBMIT = "button[type='submit']"             # UNVERIFIED — same reason as above
-SEL_LOGIN_SUCCESS = "img.nI-gNb-icon-img"              # profile avatar img, alt="naukri user profile img" — verified 2026-04-28
-SEL_CAPTCHA = "iframe[src*='recaptcha']"               # reCAPTCHA iframe — verified 2026-04-28
-
-# Search results page
 SEARCH_URL_TEMPLATE = "https://www.naukri.com/{keyword}-jobs?k={keyword}&l={location}&experience={exp_min}&nignbelow_salary=0&jobAge={max_age}"
-SEL_JOB_CARD = "div.srp-jobtuple-wrapper"              # 20 per page — verified 2026-04-28
-SEL_JOB_TITLE = "a.title"                              # inside h2 in .row1 — verified 2026-04-28
-SEL_JOB_COMPANY = "a.comp-name"                        # inside .comp-dtls-wrap in .row2 — verified 2026-04-28
-SEL_JOB_LOCATION = "span.loc-wrap"                     # inside .job-details in .row3 — verified 2026-04-28
-SEL_JOB_EXPERIENCE = "span.exp-wrap"                   # inside .job-details in .row3 — verified 2026-04-28
-SEL_JOB_URL = "a.title"                                # same as title; read href attr. Links are target=_blank — verified 2026-04-28
-SEL_JOB_SNIPPET = "span.job-desc"                      # in .row4 — verified 2026-04-28
-SEL_NEXT_PAGE = "a.styles_btn-secondary__2AsIP"        # hash-based class, fragile. Inside .styles_pagination__oIvXh — verified 2026-04-28
-
-# Job detail page — apply button
-SEL_APPLY_BUTTON = "button#apply-button"               # class "styles_apply-button__uJI3A apply-button" — verified 2026-04-28
-
-# Chatbot questionnaire drawer (appears after clicking Apply if recruiter set questions)
-SEL_CHATBOT_DRAWER = "div.chatbot_Drawer"              # drawer panel — verified 2026-04-28
-SEL_CHATBOT_OVERLAY = "div.chatbot_Overlay.show"       # background overlay — verified 2026-04-28
-SEL_CHATBOT_MSG_CONTAINER = "div.chatbot_MessageContainer"  # messages area — verified 2026-04-28
-SEL_CHATBOT_QUESTION = "div.botMsg.msg"                # individual question text — verified 2026-04-28
-SEL_CHATBOT_RADIO_CONTAINER = "div.ssrc__radio-btn-container"  # each radio option — verified 2026-04-28
-SEL_CHATBOT_RADIO_INPUT = "input.ssrc__radio"          # radio input — verified 2026-04-28
-SEL_CHATBOT_RADIO_LABEL = "label.ssrc__label"          # option label text — verified 2026-04-28
-SEL_CHATBOT_SAVE = "div.sendMsg"                       # "Save" button inside drawer — verified 2026-04-28
-SEL_CHATBOT_CLOSE = "div.crossIcon.chatBot-ic-cross"   # close X in chatbot nav — verified 2026-04-28
-SEL_CHATBOT_TEXT_INPUT = "input.ssrc__textInput"       # UNVERIFIED — free-text input in chatbot drawer. Used for review-queue applies only. Verify against live chatbot with a text question.
-SEL_RESUME_UPLOAD = "input.chatbot_Uploader[type='file']"  # hidden file input for resume — verified 2026-04-28
-
-# Confirmation page (navigated to after apply — /myapply/saveApply)
-SEL_CONFIRMATION_PAGE = "div.acp-container"            # page container — verified 2026-04-28
-SEL_APPLY_SUCCESS = "div.apply-status-header.green"    # green header = success — verified 2026-04-28
-SEL_APPLY_REJECTED = "div.apply-status-header.red"     # red header = rejected (e.g. unanswered questions) — verified 2026-04-28
-SEL_APPLY_MESSAGE = "span.apply-message"               # status text — verified 2026-04-28
-
-# Logout
-SEL_PROFILE_DROPDOWN = "div.nI-gNb-drawer__icon"       # hamburger/profile drawer trigger — verified 2026-04-28
-SEL_LOGOUT_LINK = "a.nI-gNb-list-cta"                  # "Logout" link, last item in drawer. Match by text. — verified 2026-04-28
 
 
 # ── Config ─────────────────────────────────────────────────────────────
@@ -120,48 +80,27 @@ class NaukriPlatform(BasePlatform):
     Uses persistent browser profile at data/browser_profiles/naukri/.
 
     Args:
-        log_path: Path to applications_log.csv.
-        headless: Run browser in headless mode.
-        dry_run: Score and log but never click Apply.
+        config: BotConfig with shared settings (log path, caps, headless, etc.).
     """
 
     PLATFORM_NAME = "naukri"
 
-    def __init__(
-        self,
-        log_path: Path | str = "data/applications_log.csv",
-        headless: bool = True,
-        dry_run: bool = False,
-    ) -> None:
-        self.log_path = Path(log_path)
-        self.headless = headless
-        self.dry_run = dry_run
+    def __init__(self, config: BotConfig) -> None:
+        super().__init__(config)
 
-        # Loaded from .env at runtime
+        # Platform-specific credentials (from .env)
         self.email = os.getenv("NAUKRI_EMAIL", "")
         self.password = os.getenv("NAUKRI_PASSWORD", "")
-        self.daily_cap = int(os.getenv("DAILY_CAP_NAUKRI", "75"))
 
-        # Standard answers for form filling
-        self.standard_answers: dict[str, str] = {
-            "name": "Varun Sah",
+        # Selector registry — backed by platforms/selectors/naukri.yaml
+        self.sel = SelectorStore("naukri")
+
+        # Augment shared standard_answers with Naukri-specific fields
+        self.standard_answers.update({
             "email": self.email,
-            "phone": "+91-8595062552",
-            "location": "Delhi NCR",
-            "notice_period": "Immediate",
-            "years_of_experience": "4",
-            "linkedin": "https://www.linkedin.com/in/varun-sah/",
             "current_ctc": os.getenv("NAUKRI_CURRENT_CTC", ""),
             "expected_ctc": os.getenv("NAUKRI_EXPECTED_CTC", ""),
-        }
-
-        # Session state
-        self._page: Page | None = None
-        self._context = None
-        self._playwright = None
-        self._selector_failures = 0
-        self._session_start = 0.0
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        })
 
     # ── BasePlatform interface ─────────────────────────────────────────
 
@@ -205,9 +144,9 @@ class NaukriPlatform(BasePlatform):
         # Fill credentials — use human_type for the password field
         # TODO: replace selectors with real ones
         try:
-            await self._page.fill(SEL_LOGIN_EMAIL, self.email)
-            await human_type(self._page, SEL_LOGIN_PASSWORD, self.password)
-            await self._page.click(SEL_LOGIN_SUBMIT)
+            await self._page.fill(self.sel.login_email, self.email)
+            await human_type(self._page, self.sel.login_password, self.password)
+            await self._page.click(self.sel.login_submit)
             await self._page.wait_for_load_state("networkidle", timeout=15_000)
         except PlaywrightTimeout:
             logger.error("Login form interaction timed out")
@@ -277,7 +216,7 @@ class NaukriPlatform(BasePlatform):
 
             # Parse job cards from this page
             # TODO: replace with real selectors
-            job_cards = await self._page.query_selector_all(SEL_JOB_CARD)
+            job_cards = await self._page.query_selector_all(self.sel.job_card)
             if not job_cards:
                 logger.info("No job cards found on page %d — end of results", page_num)
                 break
@@ -290,7 +229,7 @@ class NaukriPlatform(BasePlatform):
                     yield job
 
             # Check for next page
-            next_button = await self._page.query_selector(SEL_NEXT_PAGE)
+            next_button = await self._page.query_selector(self.sel.next_page)
             if not next_button:
                 logger.info("No next page button — end of results for '%s'", keyword)
                 break
@@ -324,17 +263,17 @@ class NaukriPlatform(BasePlatform):
         await self._page.goto(job_url, wait_until="domcontentloaded", timeout=30_000)
 
         # Check for native apply button — if missing, skip (external apply)
-        apply_btn = await self._page.query_selector(SEL_APPLY_BUTTON)
+        apply_btn = await self._page.query_selector(self.sel.apply_button)
         if not apply_btn:
             return {"path": "no_apply_button", "status": None, "message": "no native apply button", "questions": [], "has_unrecognized": False}
 
         # Click apply
         try:
-            await self._page.click(SEL_APPLY_BUTTON, timeout=10_000)
+            await self._page.click(self.sel.apply_button, timeout=10_000)
         except PlaywrightTimeout:
             await asyncio.sleep(SELECTOR_RETRY_DELAY)
             try:
-                await self._page.click(SEL_APPLY_BUTTON, timeout=10_000)
+                await self._page.click(self.sel.apply_button, timeout=10_000)
             except PlaywrightTimeout:
                 self._selector_failures += 1
                 raise
@@ -342,19 +281,19 @@ class NaukriPlatform(BasePlatform):
         # Wait to see which path: chatbot drawer or confirmation page redirect
         try:
             await self._page.wait_for_selector(
-                f"{SEL_CHATBOT_DRAWER}, {SEL_CONFIRMATION_PAGE}",
+                f"{self.sel.chatbot_drawer}, {self.sel.confirmation_page}",
                 timeout=10_000,
             )
         except PlaywrightTimeout:
             return {"path": "unknown", "status": None, "message": "neither chatbot nor confirmation appeared", "questions": [], "has_unrecognized": False}
 
         # Path A: direct apply — already on confirmation page
-        if await self._page.query_selector(SEL_CONFIRMATION_PAGE):
+        if await self._page.query_selector(self.sel.confirmation_page):
             status = "applied"
             message = ""
-            if await self._page.query_selector(SEL_APPLY_REJECTED):
+            if await self._page.query_selector(self.sel.apply_rejected):
                 status = "rejected"
-            msg_el = await self._page.query_selector(SEL_APPLY_MESSAGE)
+            msg_el = await self._page.query_selector(self.sel.apply_message)
             if msg_el:
                 message = (await msg_el.inner_text()).strip()
             return {"path": "direct", "status": status, "message": message, "questions": [], "has_unrecognized": False}
@@ -373,7 +312,7 @@ class NaukriPlatform(BasePlatform):
             List of {"text": str, "options": list[str], "type": "radio"|"text"}
         """
         questions: list[dict] = []
-        question_els = await self._page.query_selector_all(SEL_CHATBOT_QUESTION)
+        question_els = await self._page.query_selector_all(self.sel.chatbot_question)
 
         for q_el in question_els:
             text = (await q_el.inner_text()).strip()
@@ -384,7 +323,7 @@ class NaukriPlatform(BasePlatform):
             # Check for radio options below this question
             # Options are in the chipMsg container that follows the question
             options: list[str] = []
-            radio_labels = await self._page.query_selector_all(SEL_CHATBOT_RADIO_LABEL)
+            radio_labels = await self._page.query_selector_all(self.sel.chatbot_radio_label)
             for label in radio_labels:
                 label_text = (await label.inner_text()).strip()
                 if label_text:
@@ -435,7 +374,7 @@ class NaukriPlatform(BasePlatform):
                 else:
                     selected = self._match_radio_answer(q_text, question["options"])
                 if selected:
-                    labels = await self._page.query_selector_all(SEL_CHATBOT_RADIO_LABEL)
+                    labels = await self._page.query_selector_all(self.sel.chatbot_radio_label)
                     for label in labels:
                         label_text = (await label.inner_text()).strip()
                         if label_text == selected:
@@ -448,12 +387,12 @@ class NaukriPlatform(BasePlatform):
                 provided = custom_answers.get(q_text)
                 if provided:
                     try:
-                        await human_type(self._page, SEL_CHATBOT_TEXT_INPUT, provided)
+                        await human_type(self._page, self.sel.chatbot_text_input, provided)
                     except Exception as exc:
                         # Selector is unverified — fail gracefully, don't block the submit
                         logger.warning(
                             "Could not fill text question '%s': %s "
-                            "(SEL_CHATBOT_TEXT_INPUT may need updating from live DOM)",
+                            "(chatbot_text_input in naukri.yaml may need updating from live DOM)",
                             question["text"], exc,
                         )
 
@@ -461,28 +400,28 @@ class NaukriPlatform(BasePlatform):
         resume_path = Path("Varun_Sah_CV.pdf")
         if resume_path.exists():
             try:
-                await self._page.set_input_files(SEL_RESUME_UPLOAD, str(resume_path))
+                await self._page.set_input_files(self.sel.resume_upload, str(resume_path))
             except Exception as exc:
                 logger.debug("Resume upload skipped or failed: %s", exc)
 
         # Click Save button
         try:
-            await self._page.click(SEL_CHATBOT_SAVE, timeout=10_000)
+            await self._page.click(self.sel.chatbot_save, timeout=10_000)
         except PlaywrightTimeout:
             self._selector_failures += 1
             return {"status": "error", "notes": "selector_broken: chatbot save button"}
 
         # Wait for confirmation page (chatbot close → navigates to /myapply/saveApply)
         try:
-            await self._page.wait_for_selector(SEL_CONFIRMATION_PAGE, timeout=15_000)
+            await self._page.wait_for_selector(self.sel.confirmation_page, timeout=15_000)
         except PlaywrightTimeout:
             return {"status": "applied_unconfirmed", "notes": "no confirmation page after chatbot save"}
 
         # Check success vs rejected
-        if await self._page.query_selector(SEL_APPLY_SUCCESS):
+        if await self._page.query_selector(self.sel.apply_success):
             return {"status": "applied", "notes": ""}
-        if await self._page.query_selector(SEL_APPLY_REJECTED):
-            msg_el = await self._page.query_selector(SEL_APPLY_MESSAGE)
+        if await self._page.query_selector(self.sel.apply_rejected):
+            msg_el = await self._page.query_selector(self.sel.apply_message)
             msg = (await msg_el.inner_text()).strip() if msg_el else "rejected"
             return {"status": "error", "notes": f"rejected: {msg}"}
 
@@ -529,9 +468,9 @@ class NaukriPlatform(BasePlatform):
         """Log out of Naukri and close browser context."""
         if self._page is not None:
             try:
-                await self._page.click(SEL_PROFILE_DROPDOWN, timeout=5_000)
+                await self._page.click(self.sel.profile_dropdown, timeout=5_000)
                 # Logout is the last link in the drawer — match by text
-                await self._page.click(f"{SEL_LOGOUT_LINK} >> text=Logout", timeout=5_000)
+                await self._page.click(f"{self.sel.logout_link} >> text=Logout", timeout=5_000)
                 logger.info("Naukri logout successful")
             except PlaywrightTimeout:
                 logger.warning("Logout selectors failed — closing browser anyway")
@@ -552,7 +491,7 @@ class NaukriPlatform(BasePlatform):
         """
         import time
         self._session_start = time.monotonic()
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        self._stats.reset()
 
         init_log(self.log_path)
 
@@ -573,8 +512,8 @@ class NaukriPlatform(BasePlatform):
         finally:
             await self.logout()
 
-        logger.info("[naukri] Run complete — %s", self._stats)
-        return self._stats
+        logger.info("[naukri] Run complete — %s", self._stats.as_dict())
+        return self._stats.as_dict()
 
     async def _process_job(self, job: Job) -> None:
         """Per-job flow: dedupe → hard-skip → score → threshold → cap → apply.
@@ -664,7 +603,7 @@ class NaukriPlatform(BasePlatform):
             )
             # Close the chatbot drawer without submitting
             try:
-                await self._page.click(SEL_CHATBOT_CLOSE, timeout=5_000)
+                await self._page.click(self.sel.chatbot_close, timeout=5_000)
             except PlaywrightTimeout:
                 pass
             return
@@ -687,7 +626,7 @@ class NaukriPlatform(BasePlatform):
     async def _is_logged_in(self) -> bool:
         """Check if the page shows a logged-in state."""
         try:
-            await self._page.wait_for_selector(SEL_LOGIN_SUCCESS, timeout=3_000)
+            await self._page.wait_for_selector(self.sel.login_success, timeout=3_000)
             return True
         except PlaywrightTimeout:
             return False
@@ -695,7 +634,7 @@ class NaukriPlatform(BasePlatform):
     async def _detect_captcha(self) -> bool:
         """Check if a CAPTCHA is present on the current page."""
         try:
-            await self._page.wait_for_selector(SEL_CAPTCHA, timeout=2_000)
+            await self._page.wait_for_selector(self.sel.captcha, timeout=2_000)
             return True
         except PlaywrightTimeout:
             return False
@@ -707,24 +646,24 @@ class NaukriPlatform(BasePlatform):
         Stores job URL in self._current_job_url for use in apply flow.
         """
         try:
-            title = await card.query_selector(SEL_JOB_TITLE)
+            title = await card.query_selector(self.sel.job_title)
             title_text = (await title.inner_text()).strip() if title else ""
 
-            company = await card.query_selector(SEL_JOB_COMPANY)
+            company = await card.query_selector(self.sel.job_company)
             company_text = (await company.inner_text()).strip() if company else ""
 
-            location = await card.query_selector(SEL_JOB_LOCATION)
+            location = await card.query_selector(self.sel.job_location)
             location_text = (await location.inner_text()).strip() if location else ""
 
-            experience = await card.query_selector(SEL_JOB_EXPERIENCE)
+            experience = await card.query_selector(self.sel.job_experience)
             experience_text = (await experience.inner_text()).strip() if experience else ""
 
-            # SEL_JOB_URL is same element as SEL_JOB_TITLE — read href.
+            # job_url is same element as job_title — read href.
             # Links have target="_blank", so bot navigates via page.goto() not click.
-            url_el = await card.query_selector(SEL_JOB_URL)
+            url_el = await card.query_selector(self.sel.job_url)
             url = (await url_el.get_attribute("href")) if url_el else ""
 
-            snippet = await card.query_selector(SEL_JOB_SNIPPET)
+            snippet = await card.query_selector(self.sel.job_snippet)
             snippet_text = (await snippet.inner_text()).strip() if snippet else ""
 
             if not title_text or not url:
@@ -803,7 +742,7 @@ class NaukriPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats[status] = self._stats.get(status, 0) + 1
+        self._stats.increment(status)
         logger.debug("Recorded: %s at %s [%s] %s", job.title, job.company, status, notes)
 
     def _log_error(self, notes: str) -> None:
@@ -823,7 +762,7 @@ class NaukriPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats["errored"] += 1
+        self._stats.errored += 1
 
     def _queue_for_review(
         self,

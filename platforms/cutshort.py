@@ -5,8 +5,9 @@ Daily cap: 25 (configurable via DAILY_CAP_CUTSHORT in .env).
 
 Cutshort uses tag-based filtering rather than free-text search. Keywords
 from CLAUDE.md §4 are mapped to Cutshort tag slugs at the top of this file.
-When the caller passes a keyword, _tags_for_keyword() looks it up in the
-mapping and returns the list of tags to try.
+When the caller passes a keyword, search() looks it up in KEYWORD_TAG_MAP
+and runs a paginated search per tag.  If the keyword has no mapping, a
+warning is logged and nothing is yielded (don't crash on unknown keywords).
 
 Most Cutshort applications are single-click Easy Apply: click Apply, no form
 appears, application is submitted immediately. Some jobs surface a minimal
@@ -17,10 +18,16 @@ ATS redirect: some companies redirect the Apply click to their own ATS
 (external href on the apply button) and after clicking (URL leaves
 cutshort.io). Both cases are logged as "off_platform_redirect" and skipped.
 
-Selector strategy: all CSS selectors are class constants at the top.
-They WILL break when Cutshort ships UI changes — update them here,
-nowhere else. Each selector has a comment with what it targets and
-when it was last verified.
+Login note (2026-04-28): Cutshort removed email/password login. The only
+options are Google OAuth and phone OTP — neither is automatable. login()
+navigates to the login page, attempts the form fields (they don't exist and
+time out gracefully), then checks for a valid persistent-profile session.
+To seed the session manually: set HEADLESS=false and run once — log in via
+Google or phone in the browser window, then close. Subsequent headless runs
+reuse the saved cookies.
+
+Selectors live in platforms/selectors/cutshort.yaml (guidelines.md §4.4).
+Edit the YAML to fix broken selectors; call self.sel.reload() to hot-patch.
 """
 
 from __future__ import annotations
@@ -39,9 +46,11 @@ from urllib.parse import urlparse
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from core.browser import create_browser_context, human_type
+from core.browser import create_browser_context, human_click, human_type
 from core.logger import LogEntry, count_today, init_log, is_duplicate, log_application
 from core.scorer import Job, classify_tier, score_job, should_apply
+from core.selectors import SelectorStore
+from core.types import BotConfig
 from platforms.base import BasePlatform
 
 logger = logging.getLogger(__name__)
@@ -87,79 +96,16 @@ KEYWORD_TAG_MAP: dict[str, list[str]] = {
 # Cutshort's primary domain — used to detect off-platform ATS redirects
 CUTSHORT_DOMAIN = "cutshort.io"
 
+# Login — Cutshort removed email/password login (2026-04-28). Persistent profile only.
+LOGIN_URL = "https://cutshort.io/login"       # redirects to / if not logged in; checked for session
 
-# ── Selectors ──────────────────────────────────────────────────────────
-# CRITICAL FINDING 2026-04-28 — email/password login removed from Cutshort
-# ─────────────────────────────────────────────────────────────────────────
-# Live DOM inspection (headless=False, anti-detection context) confirmed that
-# Cutshort's login flow no longer has an email/password form. The /login URL
-# redirects to the home page. Clicking "Candidate login" opens a modal with:
-#   • "Signup or login with Google"  (OAuth)
-#   • "Login using phone"            (SMS OTP)
-# No email/password inputs exist.
-#
-# IMPACT: the current login() method cannot log in automatically. It will
-# always fail the _is_logged_in() check and skip the platform.
-#
-# RECOMMENDED WORKAROUND: persistent session approach.
-#   1. Run once with headless=False (python apply.py --platform cutshort --dry-run
-#      after temporarily setting HEADLESS=false).
-#   2. Click "Signup or login with Google" or "Login using phone" manually.
-#   3. Once logged in, close the browser. The session is saved to the
-#      persistent profile at data/browser_profiles/cutshort/.
-#   4. Future runs reuse the saved session and skip the login form entirely
-#      (the _is_logged_in() guard will see a valid session and return True).
-#
-# The selectors below for SEL_LOGIN_EMAIL, SEL_LOGIN_PASSWORD, SEL_LOGIN_SUBMIT
-# are kept as a no-op — the login() method tries them, times out gracefully,
-# and then checks the persistent session. If the session is valid, the run
-# proceeds. If not, it logs auth_failed and skips the platform for the day.
-
-# Login page
-LOGIN_URL = "https://cutshort.io/"                          # verified 2026-04-28: /login redirects to / — use home page
-SEL_LOGIN_GOOGLE = "button:has-text('Signup or login with Google')"  # verified 2026-04-28: Google OAuth button in login modal
-SEL_LOGIN_PHONE = "button[label='Login using phone']"       # verified 2026-04-28: phone OTP button in login modal
-SEL_CANDIDATE_LOGIN_BTN = "button:has-text('Candidate login')"  # verified 2026-04-28: button on home page that opens the login modal
-# Legacy email/password selectors — these fields DO NOT EXIST on Cutshort as of 2026-04-28.
-# Kept so login() gracefully times out and falls through to the persistent-session check.
-SEL_LOGIN_EMAIL = "input[type='email']"                     # DOES NOT EXIST — email login removed; kept as no-op
-SEL_LOGIN_PASSWORD = "input[type='password']"               # DOES NOT EXIST — email login removed; kept as no-op
-SEL_LOGIN_SUBMIT = "button[type='submit']"                  # DOES NOT EXIST — email login removed; kept as no-op
-SEL_LOGIN_SUCCESS = "a[href*='/profile']"                   # ? needs-credentials: element only visible when logged in (profile nav link)
-
-# Search results (tag-based)
-# Cutshort search by tag: /jobs?tags[]=growth-manager&locations[]=Delhi
+# Search URL: tag-based, no free-text
 SEARCH_URL_TEMPLATE = (
     "https://cutshort.io/jobs"
     "?tags[]={tag}"
     "&locations[]={location}"
     "&page={page}"
 )
-# NOTE 2026-04-28: Cutshort uses Styled-Components with obfuscated class names
-# (e.g. "sc-8c2323fe-0 hwKSIH"). The data-test attribute approach below is the
-# correct strategy but needs verification against a logged-in session to confirm
-# Cutshort actually uses data-test attributes on their job cards and apply flow.
-SEL_JOB_CARD = "div[data-test='job-card']"                  # ? needs-credentials: each job card in search results — data-test attr unconfirmed
-SEL_JOB_TITLE = "a[data-test='job-title']"                  # ? needs-credentials: job title link — unconfirmed
-SEL_JOB_COMPANY = "span[data-test='company-name']"          # ? needs-credentials: company name text — unconfirmed
-SEL_JOB_LOCATION = "span[data-test='job-location']"         # ? needs-credentials: location text — unconfirmed
-SEL_JOB_EXPERIENCE = "span[data-test='experience']"         # ? needs-credentials: experience range text — unconfirmed
-SEL_JOB_URL = "a[data-test='job-title']"                    # ? needs-credentials: same as title; read href attr — unconfirmed
-SEL_JOB_SNIPPET = "p[data-test='job-description']"          # ? needs-credentials: JD snippet on card — unconfirmed
-SEL_NEXT_PAGE = "a[rel='next'], button[data-test='next-page']"  # ? needs-credentials: pagination next — unconfirmed
-
-# Job detail / apply flow
-SEL_APPLY_BUTTON = "button[data-test='apply-button'], a[data-test='apply-button']"  # ? needs-credentials: Apply button — unconfirmed
-SEL_ALREADY_APPLIED = "span[data-test='applied-status']"    # ? needs-credentials: "Applied" badge/text — unconfirmed
-SEL_APPLY_SUCCESS = "div[data-test='application-success']"  # ? needs-credentials: success state after single-click apply — unconfirmed
-
-# Minimal form (appears on some Cutshort jobs after clicking Apply)
-SEL_APPLY_FORM = "form[data-test='apply-form'], div[data-test='apply-modal']"  # ? needs-credentials: form container — unconfirmed
-SEL_FORM_INPUT_TEXT = "input[type='text']"                  # ? needs-credentials: text inputs inside the form
-SEL_FORM_LABEL = "label"                                    # ? needs-credentials: field labels
-SEL_FORM_TEXTAREA = "textarea"                              # ? needs-credentials: textarea (custom question — auto-Yellow)
-SEL_RESUME_UPLOAD = "input[type='file']"                    # ? needs-credentials: resume file input
-SEL_FORM_SUBMIT = "button[type='submit'], button[data-test='submit-application']"  # ? needs-credentials: submit button
 
 
 # ── Config ─────────────────────────────────────────────────────────────
@@ -217,60 +163,45 @@ class CutshortPlatform(BasePlatform):
     ATS redirects (Greenhouse, Lever, etc.) are detected and skipped.
 
     Args:
-        log_path: Path to applications_log.csv.
-        headless: Run browser in headless mode.
-        dry_run: Score and log but never click Apply.
+        config: BotConfig with shared settings (log path, caps, headless, etc.).
     """
 
     PLATFORM_NAME = "cutshort"
 
-    def __init__(
-        self,
-        log_path: Path | str = "data/applications_log.csv",
-        headless: bool = True,
-        dry_run: bool = False,
-    ) -> None:
-        self.log_path = Path(log_path)
-        self.headless = headless
-        self.dry_run = dry_run
+    def __init__(self, config: BotConfig) -> None:
+        super().__init__(config)
 
-        # Loaded from .env at runtime
+        # Platform-specific credentials (from .env)
         self.email = os.getenv("CUTSHORT_EMAIL", "")
         self.password = os.getenv("CUTSHORT_PASSWORD", "")
-        self.daily_cap = int(os.getenv("DAILY_CAP_CUTSHORT", "25"))
 
-        # Standard answers for form filling
-        self.standard_answers: dict[str, str] = {
-            "name": "Varun Sah",
+        # Selector registry — backed by platforms/selectors/cutshort.yaml
+        self.sel = SelectorStore("cutshort")
+
+        # Augment shared standard_answers with Cutshort-specific fields
+        self.standard_answers.update({
             "email": self.email,
-            "phone": "+91-8595062552",
-            "location": "Delhi NCR",
-            "notice_period": "Immediate",
-            "years_of_experience": "4",
-            "linkedin": "https://www.linkedin.com/in/varun-sah/",
             "current_ctc": os.getenv("CUTSHORT_CURRENT_CTC", ""),
             "expected_ctc": os.getenv("CUTSHORT_EXPECTED_CTC", ""),
-        }
-
-        # Session state
-        self._page: Page | None = None
-        self._context = None
-        self._playwright = None
-        self._selector_failures = 0
-        self._session_start = 0.0
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        })
 
     # ── BasePlatform interface ─────────────────────────────────────────
 
     async def login(self) -> bool:
-        """Log into Cutshort via persistent session (email/password no longer exists).
+        """Log into Cutshort, preferring a persistent session.
 
-        As of 2026-04-28 Cutshort removed email/password login. The only
-        options are Google OAuth and phone OTP — neither is automatable.
-        This method ONLY checks for an existing logged-in session in the
-        persistent browser profile. If none is found, it logs a clear
-        error instructing the user to seed the session manually and returns
-        False so the platform is skipped for the day.
+        As of 2026-04-28 Cutshort removed email/password login in favour of
+        Google OAuth and phone OTP. This method:
+          1. Navigates to the login page.
+          2. Returns True immediately if a valid session already exists in
+             the persistent browser profile (most common case after seeding).
+          3. Attempts human_type + human_click on the email/password fields —
+             they don't exist, so the selectors time out in 3 s and the
+             try-block exits silently. If Cutshort ever restores the form,
+             this will start working.
+          4. Checks for a logged-in indicator one more time.
+          5. If still not logged in, logs a clear error instructing the user
+             to seed the session manually and returns False.
 
         To seed the session:
             HEADLESS=false python apply.py --platform cutshort --dry-run
@@ -278,8 +209,7 @@ class CutshortPlatform(BasePlatform):
         Subsequent runs (including headless) will reuse the saved cookies.
 
         Returns:
-            True if a valid session was found in the persistent profile.
-            False if no session found (user must log in manually first).
+            True if a valid session was found, False otherwise.
         """
         from playwright.async_api import async_playwright
         self._playwright = await async_playwright().start()
@@ -291,15 +221,33 @@ class CutshortPlatform(BasePlatform):
         self._page = await self._context.new_page()
 
         await self._page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        await asyncio.sleep(2)
+        await asyncio.sleep(2)  # let the page settle / redirect complete
 
+        # Check if already logged in (persistent profile may have valid session)
         if await self._is_logged_in():
             logger.info("Cutshort: existing session found — proceeding")
             return True
 
+        # Try email/password form — selector will not be found (login removed
+        # 2026-04-28) and the 3-second wait_for_selector times out silently.
+        # Kept so automated login works again if Cutshort ever restores the form.
+        try:
+            await self._page.wait_for_selector(self.sel.login_email, timeout=3_000)
+            await human_type(self._page, self.sel.login_email, self.email)
+            await human_type(self._page, self.sel.login_password, self.password)
+            await human_click(self._page, self.sel.login_submit)
+            await self._page.wait_for_load_state("networkidle", timeout=15_000)
+        except PlaywrightTimeout:
+            # Expected — email/password form does not exist.
+            logger.debug("Cutshort: email/password form not found (login removed 2026-04-28)")
+
+        if await self._is_logged_in():
+            logger.info("Cutshort login successful")
+            return True
+
         logger.error(
             "Cutshort: no active session found. "
-            "Email/password login was removed from Cutshort (2026-04-28). "
+            "Email/password login was removed (2026-04-28). "
             "To seed the session: set HEADLESS=false and run "
             "'python apply.py --platform cutshort --dry-run', "
             "then log in via Google or phone in the browser window."
@@ -309,35 +257,27 @@ class CutshortPlatform(BasePlatform):
 
     @staticmethod
     def _tags_for_keyword(keyword: str) -> list[str]:
-        """Return Cutshort tag slugs for a given keyword string.
-
-        Looks up the keyword in KEYWORD_TAG_MAP (case-insensitive).
-        Falls back to slugifying the keyword directly if no mapping found.
-        This fallback is intentionally conservative: an unrecognised keyword
-        produces one tag (the keyword itself with spaces → hyphens) rather
-        than zero tags, so new keywords don't silently produce no results.
+        """Return Cutshort tag slugs for a keyword, or [] if unmapped.
 
         Args:
             keyword: Raw keyword string, e.g. "growth manager".
 
         Returns:
-            List of tag slugs to try for this keyword, e.g. ["growth-manager", "growth-hacking"].
+            List of tag slugs, e.g. ["growth-manager", "growth-hacking"].
+            Empty list if the keyword has no entry in KEYWORD_TAG_MAP
+            (caller should log a warning and yield nothing).
         """
-        tags = KEYWORD_TAG_MAP.get(keyword.lower())
-        if tags:
-            return tags
-        # Fallback: slugify the keyword
-        slug = keyword.lower().strip().replace(" ", "-")
-        logger.debug("No tag mapping for keyword '%s' — using slug '%s' as fallback", keyword, slug)
-        return [slug]
+        return KEYWORD_TAG_MAP.get(keyword.lower(), [])
 
     async def search(self, keyword: str, filters: dict) -> AsyncIterator[Job]:
         """Search Cutshort for jobs matching a keyword via its tag mapping.
 
-        Expands the keyword to one or more Cutshort tags using
-        KEYWORD_TAG_MAP, then runs a paginated search per tag. Deduplication
-        in _process_job prevents double-processing a job that appears under
-        multiple tags.
+        Expands the keyword to one or more Cutshort tags using KEYWORD_TAG_MAP,
+        then runs a paginated search per tag. Deduplication in _process_job
+        prevents double-processing a job that appears under multiple tags.
+
+        If the keyword has no tag mapping, a warning is logged and nothing is
+        yielded — the run continues with the next keyword.
 
         Args:
             keyword: Search query from CLAUDE.md §4, e.g. "growth manager".
@@ -350,8 +290,15 @@ class CutshortPlatform(BasePlatform):
             logger.error("search() called before login()")
             return
 
-        location = filters.get("locations", [""])[0] if filters.get("locations") else ""
         tags = self._tags_for_keyword(keyword)
+        if not tags:
+            logger.warning(
+                "[cutshort] No tag mapping for keyword '%s' — skipping (add to KEYWORD_TAG_MAP to enable)",
+                keyword,
+            )
+            return
+
+        location = filters.get("locations", [""])[0] if filters.get("locations") else ""
 
         for tag in tags:
             if self._should_stop():
@@ -376,7 +323,14 @@ class CutshortPlatform(BasePlatform):
                     if not retried:
                         break
 
-                job_cards = await self._page.query_selector_all(SEL_JOB_CARD)
+                # Wait for job cards to render before querying
+                try:
+                    await self._page.wait_for_selector(self.sel.job_card, timeout=10_000)
+                except PlaywrightTimeout:
+                    logger.info("No job cards on page %d for tag '%s' — end of results", page_num, tag)
+                    break
+
+                job_cards = await self._page.query_selector_all(self.sel.job_card)
                 if not job_cards:
                     logger.info("No job cards on page %d for tag '%s' — end of results", page_num, tag)
                     break
@@ -388,7 +342,7 @@ class CutshortPlatform(BasePlatform):
                     if job is not None:
                         yield job
 
-                next_button = await self._page.query_selector(SEL_NEXT_PAGE)
+                next_button = await self._page.query_selector(self.sel.next_page)
                 if not next_button:
                     logger.info("No next page for tag '%s' — end of results", tag)
                     break
@@ -424,15 +378,19 @@ class CutshortPlatform(BasePlatform):
         job_url = job.posted_date
         await self._page.goto(job_url, wait_until="domcontentloaded", timeout=30_000)
 
+        # Check if page redirected off-platform (some jobs go straight to ATS on load)
+        if self._is_off_platform_url(self._page.url):
+            return {"path": "off_platform_redirect", "has_unrecognized": False, "questions": []}
+
         # Check if already applied
-        already = await self._page.query_selector(SEL_ALREADY_APPLIED)
+        already = await self._page.query_selector(self.sel.already_applied)
         if already:
             text = (await already.inner_text()).strip().lower()
             if "applied" in text:
                 return {"path": "already_applied", "has_unrecognized": False, "questions": []}
 
         # Find the Apply button
-        apply_btn = await self._page.query_selector(SEL_APPLY_BUTTON)
+        apply_btn = await self._page.query_selector(self.sel.apply_button)
         if not apply_btn:
             return {"path": "no_apply_button", "has_unrecognized": False, "questions": []}
 
@@ -442,16 +400,13 @@ class CutshortPlatform(BasePlatform):
         if btn_href and self._is_off_platform_url(btn_href):
             return {"path": "off_platform_redirect", "has_unrecognized": False, "questions": []}
 
-        # Record the current URL before clicking, to detect post-click redirects
-        url_before = self._page.url
-
-        # Click Apply
+        # Click Apply with human-like movement
         try:
-            await apply_btn.click(timeout=10_000)
+            await human_click(self._page, self.sel.apply_button)
         except PlaywrightTimeout:
             await asyncio.sleep(SELECTOR_RETRY_DELAY)
             try:
-                await apply_btn.click(timeout=10_000)
+                await human_click(self._page, self.sel.apply_button)
             except PlaywrightTimeout:
                 self._selector_failures += 1
                 raise
@@ -464,12 +419,12 @@ class CutshortPlatform(BasePlatform):
             return {"path": "off_platform_redirect", "has_unrecognized": False, "questions": []}
 
         # Check for immediate success (direct apply — no form)
-        success_el = await self._page.query_selector(SEL_APPLY_SUCCESS)
+        success_el = await self._page.query_selector(self.sel.apply_success)
         if success_el:
             return {"path": "direct_apply", "has_unrecognized": False, "questions": []}
 
         # Check for a form that appeared after clicking
-        form_el = await self._page.query_selector(SEL_APPLY_FORM)
+        form_el = await self._page.query_selector(self.sel.apply_form)
         if form_el:
             questions, has_unrecognized = await self._parse_apply_form()
             return {"path": "form_apply", "has_unrecognized": has_unrecognized, "questions": questions}
@@ -477,17 +432,16 @@ class CutshortPlatform(BasePlatform):
         # Unclear state — could be a slow form load; wait a bit more and retry
         try:
             await self._page.wait_for_selector(
-                f"{SEL_APPLY_SUCCESS}, {SEL_APPLY_FORM}",
+                f"{self.sel.apply_success}, {self.sel.apply_form}",
                 timeout=5_000,
             )
         except PlaywrightTimeout:
-            # Still nothing — unknown state
             return {"path": "unknown", "has_unrecognized": False, "questions": []}
 
         # Re-check after the extra wait
-        if await self._page.query_selector(SEL_APPLY_SUCCESS):
+        if await self._page.query_selector(self.sel.apply_success):
             return {"path": "direct_apply", "has_unrecognized": False, "questions": []}
-        if await self._page.query_selector(SEL_APPLY_FORM):
+        if await self._page.query_selector(self.sel.apply_form):
             questions, has_unrecognized = await self._parse_apply_form()
             return {"path": "form_apply", "has_unrecognized": has_unrecognized, "questions": questions}
 
@@ -521,7 +475,7 @@ class CutshortPlatform(BasePlatform):
 
         # Text inputs
         text_inputs = await self._page.query_selector_all(
-            f"{SEL_APPLY_FORM} {SEL_FORM_INPUT_TEXT}"
+            f"{self.sel.apply_form} {self.sel.form_input_text}"
         )
         for inp in text_inputs:
             label = await self._get_field_label(inp)
@@ -536,7 +490,7 @@ class CutshortPlatform(BasePlatform):
 
         # Textareas — always unrecognised (Cutshort rarely uses these for standard fields)
         textareas = await self._page.query_selector_all(
-            f"{SEL_APPLY_FORM} {SEL_FORM_TEXTAREA}"
+            f"{self.sel.apply_form} {self.sel.form_textarea}"
         )
         for ta in textareas:
             label = await self._get_field_label(ta)
@@ -612,7 +566,7 @@ class CutshortPlatform(BasePlatform):
         resume_path = Path("Varun_Sah_CV.pdf")
         if resume_path.exists():
             file_inputs = await self._page.query_selector_all(
-                f"{SEL_APPLY_FORM} {SEL_RESUME_UPLOAD}"
+                f"{self.sel.apply_form} {self.sel.resume_upload}"
             )
             for fi in file_inputs:
                 try:
@@ -622,7 +576,7 @@ class CutshortPlatform(BasePlatform):
 
         # Fill empty text inputs with standard answers
         text_inputs = await self._page.query_selector_all(
-            f"{SEL_APPLY_FORM} {SEL_FORM_INPUT_TEXT}"
+            f"{self.sel.apply_form} {self.sel.form_input_text}"
         )
         for inp in text_inputs:
             value = await inp.get_attribute("value") or ""
@@ -632,18 +586,18 @@ class CutshortPlatform(BasePlatform):
             answer = self._match_standard_answer(label)
             if answer:
                 inp_id = await inp.get_attribute("id")
-                selector = f"#{inp_id}" if inp_id else SEL_FORM_INPUT_TEXT
+                selector = f"#{inp_id}" if inp_id else self.sel.form_input_text
                 try:
                     await human_type(self._page, selector, answer)
                 except Exception as exc:
                     logger.debug("Failed to fill field '%s': %s", label, exc)
 
         # Fill textareas from human-reviewed custom answers (review-queue path only).
-        # SEL_FORM_TEXTAREA is TODO-marked — verify against a live form with a textarea.
+        # form_textarea selector is unverified — see cutshort.yaml note.
         custom_answers = answers.get("_custom", {})
         if custom_answers:
             textareas = await self._page.query_selector_all(
-                f"{SEL_APPLY_FORM} {SEL_FORM_TEXTAREA}"
+                f"{self.sel.apply_form} {self.sel.form_textarea}"
             )
             for ta in textareas:
                 try:
@@ -664,7 +618,7 @@ class CutshortPlatform(BasePlatform):
 
         # Click submit
         try:
-            submit_btn = await self._page.wait_for_selector(SEL_FORM_SUBMIT, timeout=5_000)
+            submit_btn = await self._page.wait_for_selector(self.sel.form_submit, timeout=5_000)
             await submit_btn.click(timeout=10_000)
         except PlaywrightTimeout:
             self._selector_failures += 1
@@ -672,7 +626,7 @@ class CutshortPlatform(BasePlatform):
 
         # Wait for success state
         try:
-            await self._page.wait_for_selector(SEL_APPLY_SUCCESS, timeout=10_000)
+            await self._page.wait_for_selector(self.sel.apply_success, timeout=10_000)
             return {"status": "applied", "notes": ""}
         except PlaywrightTimeout:
             return {"status": "applied_unconfirmed", "notes": "no success indicator after form submit"}
@@ -703,8 +657,16 @@ class CutshortPlatform(BasePlatform):
         return None
 
     async def logout(self) -> None:
-        """Close browser context. Persistent profile retains the session."""
-        logger.info("Cutshort: closing browser context")
+        """Log out of Cutshort and close browser context."""
+        if self._page is not None:
+            try:
+                await self._page.click(self.sel.profile_menu, timeout=5_000)
+                await asyncio.sleep(0.5)
+                await self._page.click(self.sel.logout_link, timeout=5_000)
+                logger.info("Cutshort logout successful")
+            except PlaywrightTimeout:
+                logger.warning("Logout selectors failed — closing browser anyway")
+
         if self._context is not None:
             await self._context.close()
         if self._playwright is not None:
@@ -720,13 +682,13 @@ class CutshortPlatform(BasePlatform):
         """
         import time
         self._session_start = time.monotonic()
-        self._stats = {"applied": 0, "skipped": 0, "errored": 0, "queued": 0}
+        self._stats.reset()
 
         init_log(self.log_path)
 
         logged_in = await self.login()
         if not logged_in:
-            return self._stats
+            return self._stats.as_dict()
 
         try:
             for keyword in keywords:
@@ -741,8 +703,8 @@ class CutshortPlatform(BasePlatform):
         finally:
             await self.logout()
 
-        logger.info("[cutshort] Run complete — %s", self._stats)
-        return self._stats
+        logger.info("[cutshort] Run complete — %s", self._stats.as_dict())
+        return self._stats.as_dict()
 
     async def _process_job(self, job: Job) -> None:
         """Per-job flow: dedupe → hard-skip → score → threshold → cap → apply."""
@@ -855,7 +817,7 @@ class CutshortPlatform(BasePlatform):
     async def _is_logged_in(self) -> bool:
         """Check if the page shows a logged-in state."""
         try:
-            await self._page.wait_for_selector(SEL_LOGIN_SUCCESS, timeout=3_000)
+            await self._page.wait_for_selector(self.sel.login_success, timeout=3_000)
             return True
         except PlaywrightTimeout:
             return False
@@ -863,24 +825,24 @@ class CutshortPlatform(BasePlatform):
     async def _parse_job_card(self, card) -> Job | None:
         """Extract a Job from a search result card element."""
         try:
-            title = await card.query_selector(SEL_JOB_TITLE)
+            title = await card.query_selector(self.sel.job_title)
             title_text = (await title.inner_text()).strip() if title else ""
 
-            company = await card.query_selector(SEL_JOB_COMPANY)
+            company = await card.query_selector(self.sel.job_company)
             company_text = (await company.inner_text()).strip() if company else ""
 
-            location = await card.query_selector(SEL_JOB_LOCATION)
+            location = await card.query_selector(self.sel.job_location)
             location_text = (await location.inner_text()).strip() if location else ""
 
-            experience = await card.query_selector(SEL_JOB_EXPERIENCE)
+            experience = await card.query_selector(self.sel.job_experience)
             experience_text = (await experience.inner_text()).strip() if experience else ""
 
-            url_el = await card.query_selector(SEL_JOB_URL)
+            url_el = await card.query_selector(self.sel.job_url)
             url = (await url_el.get_attribute("href")) if url_el else ""
             if url and not url.startswith("http"):
                 url = f"https://cutshort.io{url}"
 
-            snippet = await card.query_selector(SEL_JOB_SNIPPET)
+            snippet = await card.query_selector(self.sel.job_snippet)
             snippet_text = (await snippet.inner_text()).strip() if snippet else ""
 
             if not title_text or not url:
@@ -949,7 +911,7 @@ class CutshortPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats[status] = self._stats.get(status, 0) + 1
+        self._stats.increment(status)
         logger.debug("Recorded: %s at %s [%s] %s", job.title, job.company, status, notes)
 
     def _log_error(self, notes: str) -> None:
@@ -969,7 +931,7 @@ class CutshortPlatform(BasePlatform):
             notes=notes,
         )
         log_application(entry, self.log_path)
-        self._stats["errored"] += 1
+        self._stats.errored += 1
 
     def _queue_for_review(
         self,

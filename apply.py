@@ -28,6 +28,7 @@ import webbrowser
 from core.logger import LogEntry, count_today, init_log, log_application, read_log
 from core.notifier import build_smtp_config, send_digest
 from core.scorer import Job
+from core.types import BotConfig
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,44 @@ SUMMARY_COLUMNS = [
     "naukri_applied", "linkedin_applied", "wellfound_applied", "cutshort_applied",
     "total_skipped", "total_errors", "runtime_seconds",
 ]
+
+# Common form-field answers shared by all platforms (from profile.md).
+# Platform subclasses add email and CTC from platform-specific env vars.
+STANDARD_ANSWERS_BASE: dict[str, str] = {
+    "name": "Varun Sah",
+    "phone": "+91-8595062552",
+    "location": "Delhi NCR",
+    "notice_period": "Immediate",
+    "years_of_experience": "4",
+    "linkedin": "https://www.linkedin.com/in/varun-sah/",
+}
+
+
+def _build_config(name: str, headless: bool, dry_run: bool) -> BotConfig:
+    """Build a BotConfig for a platform using .env values."""
+    cap = int(os.getenv(f"DAILY_CAP_{name.upper()}", str(DAILY_CAPS.get(name, 999))))
+    return BotConfig(
+        log_path=LOG_PATH,
+        headless=headless,
+        dry_run=dry_run,
+        daily_cap=cap,
+        standard_answers=dict(STANDARD_ANSWERS_BASE),
+    )
+
+
+def _create_platform(cls, config: BotConfig):
+    """Construct a platform instance.
+
+    BotConfig-aware platforms (naukri) receive the config directly.
+    Legacy platforms (linkedin, wellfound, cutshort) still use keyword
+    args until they are migrated to BotConfig.
+    """
+    import inspect
+
+    if "config" in inspect.signature(cls.__init__).parameters:
+        return cls(config)
+    # Legacy construction — migration pending
+    return cls(log_path=config.log_path, headless=config.headless, dry_run=config.dry_run)
 
 
 # ── Platform loader ────────────────────────────────────────────────────
@@ -430,7 +469,8 @@ async def _queue_apply(item: dict, answers: dict, args: argparse.Namespace) -> b
         return False
 
     headless = os.getenv("HEADLESS", "true").lower() != "false"
-    platform = cls(log_path=LOG_PATH, headless=headless, dry_run=False)
+    config = _build_config(name, headless=headless, dry_run=False)
+    platform = _create_platform(cls, config)
 
     # Reconstruct a minimal Job — URL is stored in posted_date per platform convention
     job = Job(
@@ -612,20 +652,16 @@ async def _run_async(args: argparse.Namespace) -> None:
             continue
 
         headless = os.getenv("HEADLESS", "true").lower() != "false"
-        cap = int(os.getenv(f"DAILY_CAP_{name.upper()}", str(DAILY_CAPS.get(name, 999))))
-
-        platform = cls(
-            log_path=LOG_PATH,
-            headless=headless,
-            dry_run=args.dry_run,
-        )
+        config = _build_config(name, headless=headless, dry_run=args.dry_run)
 
         if args.cap is not None:
             logger.warning(
                 "[%s] --cap override: daily cap set to %d for this run only (normal cap: %d)",
-                name, args.cap, platform.daily_cap,
+                name, args.cap, config.daily_cap,
             )
-            platform.daily_cap = args.cap
+            config.daily_cap = args.cap
+
+        platform = _create_platform(cls, config)
 
         # Build per-platform filters (Wellfound/Cutshort get 14-day window)
         filters = {

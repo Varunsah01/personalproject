@@ -15,6 +15,7 @@ import pytest
 
 from core.logger import LogEntry, log_application, read_log
 from core.scorer import Job
+from core.types import BotConfig
 from platforms.naukri import NaukriPlatform
 
 
@@ -55,14 +56,16 @@ def _make_platform(
     daily_cap: int = 5,
 ) -> NaukriPlatform:
     """NaukriPlatform with a tmp log path and stub credentials."""
-    p = NaukriPlatform(
+    config = BotConfig(
         log_path=tmp_path / "log.csv",
         headless=True,
         dry_run=dry_run,
+        daily_cap=daily_cap,
+        standard_answers={},
     )
+    p = NaukriPlatform(config)
     p.email = "test@example.com"
     p.password = "test-password"
-    p.daily_cap = daily_cap
     return p
 
 
