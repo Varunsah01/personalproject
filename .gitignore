@@ -9,6 +9,10 @@ Varun_Sah_CV.pdf
 # Application data (CSV logs, browser state)
 data/
 
+# Virtual environments
+.venv/
+venv/
+
 # Python
 __pycache__/
 *.pyc

@@ -25,9 +25,11 @@ from dotenv import load_dotenv
 import json
 import webbrowser
 
-from core.logger import LogEntry, count_today, init_log, log_application, read_log
+from core.logger import LogEntry, count_today, init_log, is_duplicate, log_application, read_log
 from core.notifier import build_smtp_config, send_digest
-from core.scorer import Job
+from core.orchestrator import Candidate, count_today_all, rank_and_allocate
+from core.relevance_agent import RelevanceAgent
+from core.scorer import Job, classify_tier, score_job, should_apply
 from core.types import BotConfig
 
 logger = logging.getLogger(__name__)
@@ -70,14 +72,19 @@ FILTERS: dict = {
 # ── Platform config (CLAUDE.md §2) ────────────────────────────────────
 
 # Sequential order for the daily run
-PLATFORM_ORDER: list[str] = ["naukri", "linkedin", "wellfound", "cutshort"]
+PLATFORM_ORDER: list[str] = ["naukri", "linkedin", "wellfound", "cutshort", "greenhouse", "instahyre"]
 
-# Defaults; overridden by DAILY_CAP_<PLATFORM> in .env
-DAILY_CAPS: dict[str, int] = {
-    "naukri": 75,
-    "linkedin": 40,
-    "wellfound": 30,
-    "cutshort": 25,
+# Global daily cap — total applications across all platforms
+DAILY_CAP_GLOBAL_DEFAULT: int = 300
+
+# Per-platform soft ceilings — anti-rate-limit guardrails
+DAILY_CEILINGS_DEFAULT: dict[str, int] = {
+    "naukri": 100,
+    "linkedin": 100,
+    "wellfound": 100,
+    "cutshort": 100,
+    "greenhouse": 80,
+    "instahyre": 100,
 }
 
 # Env var pairs (email_key, password_key) per platform
@@ -86,6 +93,7 @@ CREDENTIAL_KEYS: dict[str, tuple[str, str]] = {
     "linkedin": ("LINKEDIN_EMAIL", "LINKEDIN_PASSWORD"),
     "wellfound": ("WELLFOUND_EMAIL", "WELLFOUND_PASSWORD"),
     "cutshort": ("CUTSHORT_EMAIL", "CUTSHORT_PASSWORD"),
+    "instahyre": ("INSTAHYRE_EMAIL", "INSTAHYRE_PASSWORD"),
 }
 
 
@@ -108,8 +116,13 @@ MAX_TOTAL_ERRORS = 50           # guidelines.md §6
 ERROR_RATE_THRESHOLD = 0.25     # guidelines.md §3.1 + §6
 
 SUMMARY_COLUMNS = [
-    "date", "total_applied",
-    "naukri_applied", "linkedin_applied", "wellfound_applied", "cutshort_applied",
+    "date", "total_discovered", "total_applied",
+    "naukri_discovered", "naukri_applied",
+    "linkedin_discovered", "linkedin_applied",
+    "wellfound_discovered", "wellfound_applied",
+    "cutshort_discovered", "cutshort_applied",
+    "greenhouse_discovered", "greenhouse_applied",
+    "instahyre_discovered", "instahyre_applied",
     "total_skipped", "total_errors", "runtime_seconds",
 ]
 
@@ -126,13 +139,21 @@ STANDARD_ANSWERS_BASE: dict[str, str] = {
 
 
 def _build_config(name: str, headless: bool, dry_run: bool) -> BotConfig:
-    """Build a BotConfig for a platform using .env values."""
-    cap = int(os.getenv(f"DAILY_CAP_{name.upper()}", str(DAILY_CAPS.get(name, 999))))
+    """Build a BotConfig for a platform using .env values.
+
+    The daily_cap field carries the per-platform soft ceiling (used by
+    single-platform legacy mode and as a safety valve inside
+    _attempt_apply).
+    """
+    ceiling = int(os.getenv(
+        f"DAILY_CAP_{name.upper()}_CEILING",
+        str(DAILY_CEILINGS_DEFAULT.get(name, 100)),
+    ))
     return BotConfig(
         log_path=LOG_PATH,
         headless=headless,
         dry_run=dry_run,
-        daily_cap=cap,
+        daily_cap=ceiling,
         standard_answers=dict(STANDARD_ANSWERS_BASE),
     )
 
@@ -206,6 +227,17 @@ def _preflight(platform_names: list[str], log_path: Path) -> dict[str, str | Non
     except Exception as exc:
         logger.warning("Could not check disk space: %s", exc)
 
+    # 1c. Global cap check — if total applies today already hit the global
+    # cap there is nothing useful to do.
+    global_cap = int(os.getenv("DAILY_CAP_GLOBAL", str(DAILY_CAP_GLOBAL_DEFAULT)))
+    total_today = sum(count_today(n, log_path) for n in platform_names)
+    if total_today >= global_cap:
+        reason = f"skip: global daily cap reached ({total_today}/{global_cap})"
+        logger.warning(reason)
+        for name in platform_names:
+            results[name] = reason
+        return results
+
     # Per-platform checks
     for name in platform_names:
         # 2. Credentials present (empty → login will fail; warn early)
@@ -218,11 +250,14 @@ def _preflight(platform_names: list[str], log_path: Path) -> dict[str, str | Non
             )
             # Don't skip — let login() surface the failure so it lands in the log.
 
-        # 3. Already at daily cap from a previous run today?
-        cap = int(os.getenv(f"DAILY_CAP_{name.upper()}", str(DAILY_CAPS.get(name, 999))))
+        # 3. Already at per-platform ceiling from a previous run today?
+        ceiling = int(os.getenv(
+            f"DAILY_CAP_{name.upper()}_CEILING",
+            str(DAILY_CEILINGS_DEFAULT.get(name, 100)),
+        ))
         today_count = count_today(name, log_path)
-        if today_count >= cap:
-            reason = f"skip: already at daily cap ({today_count}/{cap})"
+        if today_count >= ceiling:
+            reason = f"skip: already at platform ceiling ({today_count}/{ceiling})"
             logger.warning("[%s] %s", name, reason)
             results[name] = reason
             continue
@@ -276,13 +311,25 @@ def _write_summary(
         s = stats.get(name, {})
         return s.get("applied", 0) + s.get("applied_unconfirmed", 0)
 
+    def _discovered(name: str) -> int:
+        return stats.get(name, {}).get("discovered", 0)
+
     row = {
         "date": today,
+        "total_discovered": sum(_discovered(n) for n in PLATFORM_ORDER),
         "total_applied": sum(_applied(n) for n in PLATFORM_ORDER),
+        "naukri_discovered": _discovered("naukri"),
         "naukri_applied": _applied("naukri"),
+        "linkedin_discovered": _discovered("linkedin"),
         "linkedin_applied": _applied("linkedin"),
+        "wellfound_discovered": _discovered("wellfound"),
         "wellfound_applied": _applied("wellfound"),
+        "cutshort_discovered": _discovered("cutshort"),
         "cutshort_applied": _applied("cutshort"),
+        "greenhouse_discovered": _discovered("greenhouse"),
+        "greenhouse_applied": _applied("greenhouse"),
+        "instahyre_discovered": _discovered("instahyre"),
+        "instahyre_applied": _applied("instahyre"),
         "total_skipped": sum(stats.get(n, {}).get("skipped", 0) for n in PLATFORM_ORDER),
         "total_errors": sum(stats.get(n, {}).get("errored", 0) for n in PLATFORM_ORDER),
         "runtime_seconds": int(runtime_seconds),
@@ -306,30 +353,32 @@ def _print_summary(
     print("─" * width)
     print(f"  job-bot run complete — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("─" * width)
-    print(f"  {'Platform':<12} {'Applied':>7} {'Skipped':>8} {'Errors':>7} {'Queued':>7}")
+    print(f"  {'Platform':<12} {'Found':>7} {'Applied':>7} {'Skipped':>8} {'Errors':>7} {'Queued':>7}")
     print("─" * width)
 
-    total_applied = total_skipped = total_errors = 0
+    total_discovered = total_applied = total_skipped = total_errors = 0
 
     for name in PLATFORM_ORDER:
         if name in skipped_platforms:
             reason = skipped_platforms[name].replace("skip: ", "")
-            print(f"  {name:<12} {'—':>7} {'—':>8} {'—':>7} {'—':>7}  ({reason})")
+            print(f"  {name:<12} {'—':>7} {'—':>7} {'—':>8} {'—':>7} {'—':>7}  ({reason})")
             continue
         if name not in stats:
             continue
         s = stats[name]
+        discovered = s.get("discovered", 0)
         applied = s.get("applied", 0) + s.get("applied_unconfirmed", 0)
         skipped = s.get("skipped", 0)
         errors = s.get("errored", 0)
         queued = s.get("queued", 0)
-        print(f"  {name:<12} {applied:>7} {skipped:>8} {errors:>7} {queued:>7}")
+        print(f"  {name:<12} {discovered:>7} {applied:>7} {skipped:>8} {errors:>7} {queued:>7}")
+        total_discovered += discovered
         total_applied += applied
         total_skipped += skipped
         total_errors += errors
 
     print("─" * width)
-    print(f"  {'TOTAL':<12} {total_applied:>7} {total_skipped:>8} {total_errors:>7}")
+    print(f"  {'TOTAL':<12} {total_discovered:>7} {total_applied:>7} {total_skipped:>8} {total_errors:>7}")
     print(f"\n  Runtime: {runtime_seconds:.0f}s")
     print("─" * width)
     print()
@@ -591,10 +640,270 @@ def _handle_review_queue(args: argparse.Namespace) -> None:
     print(f"\n  {processed} item(s) processed, {len(remaining)} remaining in queue.\n")
 
 
+# ── Two-phase helpers (global cap flow) ───────────────────────────────
+
+
+def _agent_queue_for_review(
+    job: Job,
+    fit_score: float,
+    tier: str,
+    reason: str,
+    platform_name: str,
+    log_path: Path,
+) -> None:
+    """Write a job to review_queue.csv when the relevance agent says 'queue'.
+
+    Uses the same schema as platform _queue_for_review() methods.
+    """
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=5)
+
+    if not QUEUE_PATH.exists():
+        QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(QUEUE_PATH, "w", newline="") as f:
+            csv.writer(f).writerow(REVIEW_QUEUE_COLUMNS)
+
+    row = {
+        "queued_at": now.isoformat(),
+        "platform": platform_name,
+        "company_name": job.company,
+        "role_title": job.title,
+        "job_url": job.posted_date,
+        "fit_score": f"{fit_score:.2f}",
+        "tier": tier,
+        "reason_queued": f"agent_review: {reason}",
+        "custom_questions": "[]",
+        "expires_at": expires.isoformat(),
+    }
+    with open(QUEUE_PATH, "a", newline="") as f:
+        csv.DictWriter(f, fieldnames=REVIEW_QUEUE_COLUMNS).writerow(row)
+
+
+async def _discover_from_platform(
+    name: str,
+    platform,
+    keywords: list[str],
+    filters: dict,
+    log_path: Path,
+    agent: RelevanceAgent | None = None,
+) -> tuple[list[Candidate], dict[str, int]]:
+    """Phase 1: login, search all keywords, score/dedupe, collect candidates.
+
+    Does NOT apply. Logs skipped jobs to CSV. The platform session is
+    opened and closed within this function.
+
+    Returns:
+        (candidates, stats) where stats = {discovered, skipped, errored}.
+    """
+    candidates: list[Candidate] = []
+    skipped = 0
+    errored = 0
+
+    logged_in = await platform.login()
+    if not logged_in:
+        logger.error("[%s] Login failed during discovery — skipping platform", name)
+        return candidates, {"discovered": 0, "skipped": 0, "errored": 1}
+
+    try:
+        for keyword in keywords:
+            # Respect platform-level kill switches (session time, STOP file)
+            if hasattr(platform, '_should_stop') and platform._should_stop():
+                break
+
+            logger.info("[%s] Discovering: %s", name, keyword)
+            try:
+                async for job in platform.search(keyword, filters):
+                    if hasattr(platform, '_should_stop') and platform._should_stop():
+                        break
+
+                    # 1. Dedupe (URL in job.posted_date)
+                    if is_duplicate(name, job.posted_date, log_path):
+                        skipped += 1
+                        continue
+
+                    # 2-4. Score, classify, threshold check
+                    fit_score = score_job(job)
+                    tier = classify_tier(job.title)
+                    do_apply, reason = should_apply(job, fit_score, tier)
+
+                    if not do_apply:
+                        now = datetime.now(timezone.utc)
+                        entry = LogEntry(
+                            date_applied=now.strftime("%Y-%m-%d"),
+                            time_applied=now.strftime("%H:%M"),
+                            platform=name,
+                            company_name=job.company,
+                            role_title=job.title,
+                            experience_required=job.experience_required,
+                            location=job.location,
+                            job_url=job.posted_date,
+                            fit_score=fit_score,
+                            status="skipped",
+                            notes=reason,
+                        )
+                        log_application(entry, log_path)
+                        skipped += 1
+                        continue
+
+                    # Relevance agent gate — semantic second-pass
+                    if agent is not None:
+                        verdict = agent.evaluate(job, name)
+                        if verdict is None:
+                            pass  # budget exceeded or unavailable — use keyword verdict
+                        elif verdict.decision == "skip":
+                            now = datetime.now(timezone.utc)
+                            entry = LogEntry(
+                                date_applied=now.strftime("%Y-%m-%d"),
+                                time_applied=now.strftime("%H:%M"),
+                                platform=name,
+                                company_name=job.company,
+                                role_title=job.title,
+                                experience_required=job.experience_required,
+                                location=job.location,
+                                job_url=job.posted_date,
+                                fit_score=fit_score,
+                                status="skipped",
+                                notes=f"agent skip: {verdict.reason}",
+                            )
+                            log_application(entry, log_path)
+                            skipped += 1
+                            continue
+                        elif verdict.decision == "queue":
+                            _agent_queue_for_review(job, fit_score, tier, verdict.reason, name, log_path)
+                            now = datetime.now(timezone.utc)
+                            entry = LogEntry(
+                                date_applied=now.strftime("%Y-%m-%d"),
+                                time_applied=now.strftime("%H:%M"),
+                                platform=name,
+                                company_name=job.company,
+                                role_title=job.title,
+                                experience_required=job.experience_required,
+                                location=job.location,
+                                job_url=job.posted_date,
+                                fit_score=fit_score,
+                                status="queued",
+                                notes=f"agent queue: {verdict.reason}",
+                            )
+                            log_application(entry, log_path)
+                            skipped += 1
+                            continue
+                        # verdict.decision == "apply" → proceed to candidate pool
+
+                    candidates.append(Candidate(name, job, fit_score, tier))
+            except Exception as exc:
+                logger.error("[%s] Error during search for '%s': %s", name, keyword, exc, exc_info=True)
+                errored += 1
+    finally:
+        try:
+            await platform.logout()
+        except Exception:
+            pass
+
+    logger.info("[%s] Discovery done: %d candidates, %d skipped, %d errors",
+                name, len(candidates), skipped, errored)
+    return candidates, {"discovered": len(candidates), "skipped": skipped, "errored": errored}
+
+
+async def _apply_batch(
+    name: str,
+    candidates: list[Candidate],
+    headless: bool,
+    dry_run: bool,
+    log_path: Path,
+) -> dict[str, int]:
+    """Phase 3: login, apply each allocated candidate, logout.
+
+    Creates a fresh platform instance with its own browser context.
+
+    Returns:
+        Stats dict: {applied, skipped, errored, queued}.
+    """
+    import random
+
+    try:
+        cls = _load_platform_class(name)
+    except Exception as exc:
+        logger.error("[%s] Cannot load platform for apply batch: %s", name, exc)
+        return {"applied": 0, "skipped": 0, "errored": len(candidates), "queued": 0}
+
+    config = _build_config(name, headless=headless, dry_run=dry_run)
+    platform = _create_platform(cls, config)
+
+    logged_in = await platform.login()
+    if not logged_in:
+        logger.error("[%s] Login failed during apply phase — logging all as errors", name)
+        now = datetime.now(timezone.utc)
+        for c in candidates:
+            entry = LogEntry(
+                date_applied=now.strftime("%Y-%m-%d"),
+                time_applied=now.strftime("%H:%M"),
+                platform=name,
+                company_name=c.job.company,
+                role_title=c.job.title,
+                experience_required=c.job.experience_required,
+                location=c.job.location,
+                job_url=c.job.posted_date,
+                fit_score=c.fit_score,
+                status="error",
+                notes="login failed during apply phase",
+            )
+            log_application(entry, log_path)
+        return {"applied": 0, "skipped": 0, "errored": len(candidates), "queued": 0}
+
+    try:
+        for candidate in candidates:
+            if hasattr(platform, '_should_stop') and platform._should_stop():
+                break
+
+            # Check STOP file between applications
+            if STOP_FILE.exists():
+                logger.warning("STOP file detected during apply batch — stopping %s", name)
+                break
+
+            # Tier route — Yellow queue for borderline scores
+            if hasattr(platform, '_should_queue') and platform._should_queue(candidate.fit_score, candidate.tier):
+                if hasattr(platform, '_queue_for_review'):
+                    platform._queue_for_review(
+                        candidate.job, candidate.fit_score, candidate.tier, "score_in_review_band",
+                    )
+                continue
+
+            # Dry run
+            if dry_run:
+                if hasattr(platform, '_record'):
+                    platform._record(candidate.job, candidate.fit_score, "skipped", "dry run: would apply")
+                continue
+
+            # Apply using the platform's own attempt logic
+            try:
+                await platform._attempt_apply(candidate.job, candidate.fit_score, candidate.tier)
+            except Exception as exc:
+                logger.error("[%s] Error applying to %s: %s", name, candidate.job.posted_date, exc, exc_info=True)
+                if hasattr(platform, '_record'):
+                    platform._record(candidate.job, candidate.fit_score, "error", f"apply error: {exc}")
+
+            # Delay between applications (5-15s, guidelines.md §3.2)
+            delay = random.uniform(5, 15)
+            logger.debug("Waiting %.1fs before next application", delay)
+            await asyncio.sleep(delay)
+    finally:
+        try:
+            await platform.logout()
+        except Exception:
+            pass
+
+    return platform._stats.as_dict()
+
+
 # ── Main async runner ──────────────────────────────────────────────────
 
 async def _run_async(args: argparse.Namespace) -> None:
-    """Async core: pre-flight → platform runs → post-run."""
+    """Async core: pre-flight → discover → rank → apply → post-run.
+
+    Multi-platform mode uses the two-phase global-cap flow.
+    Single-platform mode (--platform) uses the legacy per-platform flow
+    for backward compatibility.
+    """
     start_time = time.monotonic()
 
     # Determine which platforms to run
@@ -625,45 +934,37 @@ async def _run_async(args: argparse.Namespace) -> None:
         logger.warning("STOP file detected at %s — aborting before starting any platform", STOP_FILE)
         return
 
+    headless = os.getenv("HEADLESS", "true").lower() != "false"
+
+    # Resolve global cap
+    global_cap = int(os.getenv("DAILY_CAP_GLOBAL", str(DAILY_CAP_GLOBAL_DEFAULT)))
+    if args.cap is not None:
+        logger.warning(
+            "--cap override: global daily cap set to %d for this run (default: %d)",
+            args.cap, global_cap,
+        )
+        global_cap = args.cap
+
     stats: dict[str, dict] = {}
-    total_session_errors = 0
 
-    for name in run_platforms:
-        # Kill switch checks before each platform (guidelines.md §6)
-        if STOP_FILE.exists():
-            logger.warning("STOP file detected — stopping before %s", name)
-            break
+    # ── Single-platform mode — legacy flow via platform.run() ─────────
+    if args.platform:
+        name = args.platform
+        logger.info("[%s] Single-platform mode (dry_run=%s)", name, args.dry_run)
 
-        if total_session_errors >= MAX_TOTAL_ERRORS:
-            logger.error(
-                "Total session errors (%d) exceeded limit (%d) — aborting run",
-                total_session_errors, MAX_TOTAL_ERRORS,
-            )
-            break
-
-        logger.info("[%s] Starting platform run (dry_run=%s)", name, args.dry_run)
-
-        # Load platform class from registry
         try:
             cls = _load_platform_class(name)
         except Exception as exc:
             logger.error("[%s] Cannot load platform class: %s", name, exc)
             skipped_platforms[name] = f"skip: import error ({exc})"
-            continue
+            _print_summary({}, time.monotonic() - start_time, skipped_platforms)
+            return
 
-        headless = os.getenv("HEADLESS", "true").lower() != "false"
         config = _build_config(name, headless=headless, dry_run=args.dry_run)
-
-        if args.cap is not None:
-            logger.warning(
-                "[%s] --cap override: daily cap set to %d for this run only (normal cap: %d)",
-                name, args.cap, config.daily_cap,
-            )
-            config.daily_cap = args.cap
-
+        # In single-platform mode, cap is min(global, ceiling)
+        config.daily_cap = min(global_cap, config.daily_cap)
         platform = _create_platform(cls, config)
 
-        # Build per-platform filters (Wellfound/Cutshort get 14-day window)
         filters = {
             **FILTERS,
             "date_max_age_days": 14 if name in ("wellfound", "cutshort") else 7,
@@ -676,8 +977,128 @@ async def _run_async(args: argparse.Namespace) -> None:
             platform_stats = {"applied": 0, "skipped": 0, "errored": 1, "queued": 0}
 
         stats[name] = platform_stats
-        total_session_errors += platform_stats.get("errored", 0)
         logger.info("[%s] Done: %s", name, platform_stats)
+
+    # ── Multi-platform mode — two-phase global-cap flow ───────────────
+    else:
+        total_session_errors = 0
+
+        # Relevance agent — semantic second-pass (disabled with --no-agent)
+        agent: RelevanceAgent | None = None
+        if not getattr(args, "no_agent", False):
+            agent = RelevanceAgent()
+            logger.info("Relevance agent enabled (model=%s, budget=%d/day)",
+                        agent._model, agent._budget)
+        else:
+            logger.info("Relevance agent disabled (--no-agent)")
+
+        # Phase 1: Discovery
+        logger.info("Phase 1: Discovering candidates across %d platforms", len(run_platforms))
+        all_candidates: list[Candidate] = []
+        discovery_stats: dict[str, dict] = {}
+
+        for name in run_platforms:
+            if STOP_FILE.exists():
+                logger.warning("STOP file detected — stopping discovery before %s", name)
+                break
+            if total_session_errors >= MAX_TOTAL_ERRORS:
+                logger.error("Total errors (%d) exceeded limit — stopping discovery", total_session_errors)
+                break
+
+            try:
+                cls = _load_platform_class(name)
+            except Exception as exc:
+                logger.error("[%s] Cannot load platform class: %s", name, exc)
+                skipped_platforms[name] = f"skip: import error ({exc})"
+                continue
+
+            config = _build_config(name, headless=headless, dry_run=args.dry_run)
+            platform = _create_platform(cls, config)
+
+            filters = {
+                **FILTERS,
+                "date_max_age_days": 14 if name in ("wellfound", "cutshort") else 7,
+            }
+
+            candidates, disc_stats = await _discover_from_platform(
+                name, platform, keywords, filters, LOG_PATH, agent=agent,
+            )
+            all_candidates.extend(candidates)
+            discovery_stats[name] = disc_stats
+            total_session_errors += disc_stats.get("errored", 0)
+            logger.info("[%s] Discovery: %s", name, disc_stats)
+
+        logger.info(
+            "Discovery complete: %d candidates from %d platform(s)",
+            len(all_candidates), len(run_platforms) - len(skipped_platforms),
+        )
+
+        # Phase 2: Rank and allocate
+        ceilings = {
+            name: int(os.getenv(
+                f"DAILY_CAP_{name.upper()}_CEILING",
+                str(DAILY_CEILINGS_DEFAULT.get(name, 100)),
+            ))
+            for name in run_platforms
+        }
+        already_applied = count_today_all(run_platforms, LOG_PATH)
+
+        allocated, overflow = rank_and_allocate(
+            all_candidates, global_cap, ceilings, already_applied,
+        )
+        logger.info(
+            "Allocation: %d to apply, %d overflow (global cap %d, ceilings %s)",
+            len(allocated), len(overflow), global_cap, ceilings,
+        )
+
+        # Log overflow candidates as skipped
+        if overflow:
+            now = datetime.now(timezone.utc)
+            for c in overflow:
+                entry = LogEntry(
+                    date_applied=now.strftime("%Y-%m-%d"),
+                    time_applied=now.strftime("%H:%M"),
+                    platform=c.platform,
+                    company_name=c.job.company,
+                    role_title=c.job.title,
+                    experience_required=c.job.experience_required,
+                    location=c.job.location,
+                    job_url=c.job.posted_date,
+                    fit_score=c.fit_score,
+                    status="skipped",
+                    notes=f"overflow: below global cap cutoff (score {c.fit_score:.2f})",
+                )
+                log_application(entry, LOG_PATH)
+
+        # Phase 3: Apply (grouped by platform)
+        by_platform: dict[str, list[Candidate]] = {}
+        for c in allocated:
+            by_platform.setdefault(c.platform, []).append(c)
+
+        for name in run_platforms:
+            batch = by_platform.get(name, [])
+            if not batch:
+                # Carry discovery stats even if nothing allocated
+                stats[name] = discovery_stats.get(name, {})
+                continue
+
+            if STOP_FILE.exists():
+                logger.warning("STOP file detected — stopping apply before %s", name)
+                break
+            if total_session_errors >= MAX_TOTAL_ERRORS:
+                logger.error("Total errors (%d) exceeded limit — stopping apply", total_session_errors)
+                break
+
+            logger.info("[%s] Phase 3: Applying to %d candidates (dry_run=%s)", name, len(batch), args.dry_run)
+            batch_stats = await _apply_batch(name, batch, headless, args.dry_run, LOG_PATH)
+
+            # Merge discovery + apply stats
+            merged = dict(discovery_stats.get(name, {}))
+            merged.update(batch_stats)
+            merged["discovered"] = discovery_stats.get(name, {}).get("discovered", 0)
+            stats[name] = merged
+            total_session_errors += batch_stats.get("errored", 0)
+            logger.info("[%s] Apply done: %s", name, batch_stats)
 
     runtime = time.monotonic() - start_time
 
@@ -738,9 +1159,9 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Override daily cap for this run only. "
-            "CLI-only — never read from env, never persisted. "
-            "Logs a WARNING when used."
+            "Override global daily cap (DAILY_CAP_GLOBAL) for this run only. "
+            "Per-platform ceilings still apply. "
+            "CLI-only — never persisted. Logs a WARNING when used."
         ),
     )
     parser.add_argument(
@@ -762,6 +1183,11 @@ def parse_args() -> argparse.Namespace:
         "--review-queue",
         action="store_true",
         help="Interactive review of Yellow-tier queue",
+    )
+    parser.add_argument(
+        "--no-agent",
+        action="store_true",
+        help="Disable the LLM relevance agent (use keyword scorer only)",
     )
     parser.add_argument(
         "--verbose",

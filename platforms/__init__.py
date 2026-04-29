@@ -10,4 +10,6 @@ PLATFORM_REGISTRY: dict[str, str] = {
     "linkedin": "platforms.linkedin.LinkedInPlatform",
     "wellfound": "platforms.wellfound.WellfoundPlatform",
     "cutshort": "platforms.cutshort.CutshortPlatform",
+    "greenhouse": "platforms.greenhouse.GreenhousePlatform",
+    "instahyre": "platforms.instahyre.InstahyrePlatform",
 }

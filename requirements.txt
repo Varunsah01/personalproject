@@ -11,6 +11,12 @@ python-dotenv>=1.0
 # YAML selector files (platforms/selectors/*.yaml) loaded by core/selectors.py
 PyYAML>=6.0
 
+# LLM relevance agent — semantic second-pass on job fit (core/relevance_agent.py)
+anthropic>=0.39
+
+# Greenhouse platform — async HTTP client for Job Board API (platforms/greenhouse.py)
+httpx>=0.27
+
 # Test runner — scoring logic, dedupe, CSV writes have unit tests
 pytest>=8.0
 # Async test support for platform orchestration smoke tests

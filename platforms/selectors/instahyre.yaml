@@ -1,0 +1,52 @@
+# Instahyre CSS selectors — BEST-GUESS UNVERIFIED.
+# All selectors need verification via a headful seed session.
+# Edit ONLY this file when selectors break (guidelines.md §4.4).
+# After editing, call self.sel.reload() and re-test with --dry-run.
+
+# Login page (https://www.instahyre.com/login/)
+login_email: "input[type='email'], input[name='email'], input[placeholder*='email' i]"                    # BEST-GUESS UNVERIFIED
+login_password: "input[type='password'], input[name='password']"                                          # BEST-GUESS UNVERIFIED
+login_submit: "button[type='submit'], input[type='submit'], button:has-text('Log in'), button:has-text('Login')"  # BEST-GUESS UNVERIFIED
+login_success: "a[href*='/candidate/opportunities'], nav .user-avatar, img.avatar, .dashboard-link"       # BEST-GUESS UNVERIFIED — any element that appears only when logged in
+captcha: "iframe[src*='recaptcha'], iframe[src*='hcaptcha'], div.g-recaptcha"                              # BEST-GUESS UNVERIFIED
+
+# Dashboard / opportunities page (https://www.instahyre.com/candidate/opportunities/)
+job_card: "div.opportunity-card, div.job-card, div[class*='opportunity'], tr.opportunity-row"              # BEST-GUESS UNVERIFIED — Instahyre shows recruiter-curated opportunities
+job_title: "h3.job-title, a.job-title, .opportunity-title, .role-title"                                   # BEST-GUESS UNVERIFIED
+job_company: "span.company-name, a.company-name, .company-title, .employer-name"                          # BEST-GUESS UNVERIFIED
+job_location: "span.location, .job-location, .location-text"                                              # BEST-GUESS UNVERIFIED
+job_experience: "span.experience, .exp-range, .experience-text"                                           # BEST-GUESS UNVERIFIED
+job_url: "a.job-title, a.opportunity-link, a[href*='/job/']"                                              # BEST-GUESS UNVERIFIED — read href attr
+job_snippet: "p.job-description, .description-snippet, .jd-preview"                                       # BEST-GUESS UNVERIFIED
+next_page: "a.next, button.next, li.next a, a:has-text('Next'), button:has-text('Next')"                  # BEST-GUESS UNVERIFIED — may not exist if infinite scroll
+
+# Opportunity / Job detail page
+apply_button: "button:has-text('Apply'), button:has-text('Interested'), a:has-text('Apply'), button.apply-btn"  # BEST-GUESS UNVERIFIED — Instahyre uses "Interested" button
+accept_button: "button:has-text('Accept'), button:has-text('Interested'), button.accept-invite"            # BEST-GUESS UNVERIFIED — for recruiter invitations
+
+# Application form (may appear as modal or inline)
+form_container: "div.application-form, div.apply-modal, form.apply-form, div[class*='application']"       # BEST-GUESS UNVERIFIED
+
+# Standard form fields (Instahyre may pre-fill from profile)
+field_name: "input[name='name'], input[name='full_name'], input[placeholder*='name' i]"                   # BEST-GUESS UNVERIFIED
+field_email: "input[name='email'], input[type='email']"                                                    # BEST-GUESS UNVERIFIED
+field_phone: "input[name='phone'], input[name='mobile'], input[type='tel']"                                # BEST-GUESS UNVERIFIED
+field_experience: "input[name='experience'], input[name='years_experience'], select[name='experience']"    # BEST-GUESS UNVERIFIED
+field_ctc: "input[name='ctc'], input[name='current_ctc'], input[name='salary']"                            # BEST-GUESS UNVERIFIED
+field_expected_ctc: "input[name='expected_ctc'], input[name='expected_salary']"                             # BEST-GUESS UNVERIFIED
+field_notice_period: "input[name='notice_period'], select[name='notice_period']"                           # BEST-GUESS UNVERIFIED
+field_linkedin: "input[name='linkedin'], input[placeholder*='linkedin' i]"                                 # BEST-GUESS UNVERIFIED
+
+# Resume upload
+resume_upload: "input[type='file'][name*='resume'], input[type='file'][name*='cv'], input[type='file']"    # BEST-GUESS UNVERIFIED
+
+# Submit
+submit_button: "button[type='submit']:has-text('Submit'), button:has-text('Apply'), button:has-text('Send')"  # BEST-GUESS UNVERIFIED
+
+# Confirmation
+apply_success: "div.success, .thank-you, .application-success, h2:has-text('Applied'), div:has-text('Application submitted')"  # BEST-GUESS UNVERIFIED
+apply_message: "p.status-message, .success-message, .apply-status"                                         # BEST-GUESS UNVERIFIED
+
+# Logout
+profile_menu: "div.user-menu, .avatar-dropdown, img.avatar, a[href*='profile'], .user-dropdown"           # BEST-GUESS UNVERIFIED
+logout_link: "a[href*='logout'], a:has-text('Logout'), a:has-text('Log out'), button:has-text('Logout')"  # BEST-GUESS UNVERIFIED

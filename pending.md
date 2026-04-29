@@ -120,6 +120,8 @@ None. All code complete and tested.
 | Wellfound selectors verification | **P1** | Unverified | `data-test` attrs are best-guess; verify on live session |
 | Cutshort selectors verification | **P1** | Unverified | Same caveat |
 | LinkedIn selectors live-check | **P2** | Unverified | Patterns follow expected Easy Apply but not DOM-verified |
+| Headful seed session — Instahyre | **P1** | Not done | All selectors are BEST-GUESS UNVERIFIED; 403s on automated fetch |
+| Instahyre selectors verification | **P1** | Unverified | Need live DOM inspection to confirm opportunity cards, apply flow |
 
 ---
 
@@ -128,10 +130,13 @@ None. All code complete and tested.
 | Item | Priority | Notes |
 |---|---|---|
 | CRITICAL-1 in pipeline.py (`_parse_error_rate` counts "skipped" as errors) | P2 | Documented in outreach/AUDIT.md. One-line fix when ready. |
-| Instahyre platform | P3 | Platform #5, not in initial scope |
+| ~~Instahyre platform~~ | DONE | `platforms/instahyre.py` — recruiter-led curated board. Ceiling 100/day. Selectors UNVERIFIED. |
 | Resume tailoring (per-tier) | P3 | Using master CV for now |
 | Naukri profile auto-update | P3 | Defaulting to yes |
 | Recruiter DM on LinkedIn | P4 | Defaulting to no |
+| ~~Global dynamic cap refactoring~~ | DONE | Replaced per-platform fixed caps with `DAILY_CAP_GLOBAL=300` + per-platform soft ceilings. Two-phase discover→rank→apply flow. |
+| ~~LLM relevance agent~~ | DONE | `core/relevance_agent.py` — Claude-powered semantic second-pass after keyword scorer. Budget-capped at 400/day, cached 30 days. `--no-agent` to disable. |
+| ~~Greenhouse platform~~ | DONE | `platforms/greenhouse.py` — public Job Board API for discovery, Playwright for form filling. Ceiling 80/day. Companies in `config/greenhouse_companies.txt`. |
 
 ---
 

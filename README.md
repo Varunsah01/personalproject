@@ -4,10 +4,14 @@ Playwright-based Python bot that auto-applies to relevant jobs across Indian job
 
 ## Platforms (in build order)
 
-1. **Naukri.com** — highest volume Indian board (cap: 75/day)
-2. **LinkedIn Easy Apply** — best quality, stricter rate limits (cap: 40/day)
-3. **Wellfound** — startups, best profile fit (cap: 30/day)
-4. **Cutshort** — India tech roles (cap: 25/day)
+1. **Naukri.com** — highest volume Indian board (ceiling: 100/day)
+2. **LinkedIn Easy Apply** — best quality, stricter rate limits (ceiling: 100/day)
+3. **Wellfound** — startups, best profile fit (ceiling: 100/day)
+4. **Cutshort** — India tech roles (ceiling: 100/day)
+5. **Greenhouse** — public Job Board API for discovery, Playwright for apply (ceiling: 80/day)
+6. **Instahyre** — curated tech, recruiter-led (ceiling: 100/day)
+
+**Global daily cap: 300.** The bot discovers candidates across all platforms, ranks by fit score, and applies to the top candidates up to the global cap. Per-platform ceilings are soft guardrails to avoid rate-limit issues.
 
 ## Setup
 
@@ -35,6 +39,9 @@ python apply.py --platform naukri
 
 # Custom keyword
 python apply.py --keyword "founding member"
+
+# Override global daily cap for this run
+python apply.py --cap 50
 
 # Lower the apply threshold for a day
 python apply.py --threshold 0.4
@@ -75,6 +82,10 @@ platforms/
   linkedin.py         # (built in step 5)
   wellfound.py        # (built in step 7)
   cutshort.py         # (built in step 8)
+  greenhouse.py       # Greenhouse API + Playwright forms
+  instahyre.py        # Recruiter-led curated tech board
+config/
+  greenhouse_companies.txt  # Board tokens for Greenhouse API
 data/                 # Created at runtime, gitignored
   applications_log.csv
   daily_summary.csv

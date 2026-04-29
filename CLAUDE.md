@@ -31,15 +31,16 @@ Within the `outreach/` module, `outreach/CLAUDE.md` provides module-level overri
 
 ## 2. PLATFORMS (in build order)
 
-| # | Platform | Module | Why this order | Daily cap |
-|---|----------|--------|----------------|-----------|
-| 1 | Naukri.com | `platforms/naukri.py` | Highest volume Indian board, easiest selectors | 75 |
-| 2 | LinkedIn (Easy Apply) | `platforms/linkedin.py` | Best quality, but stricter rate limits | 40 |
-| 3 | Wellfound (AngelList) | `platforms/wellfound.py` | Startups — best fit for my profile | 30 |
-| 4 | Cutshort | `platforms/cutshort.py` | India tech roles, moderate volume | 25 |
-| 5 | Instahyre | `platforms/instahyre.py` | (later) curated tech, recruiter-led | 20 |
+| # | Platform | Module | Why this order | Soft ceiling |
+|---|----------|--------|----------------|--------------|
+| 1 | Naukri.com | `platforms/naukri.py` | Highest volume Indian board, easiest selectors | 100 |
+| 2 | LinkedIn (Easy Apply) | `platforms/linkedin.py` | Best quality, but stricter rate limits | 100 |
+| 3 | Wellfound (AngelList) | `platforms/wellfound.py` | Startups — best fit for my profile | 100 |
+| 4 | Cutshort | `platforms/cutshort.py` | India tech roles, moderate volume | 100 |
+| 5 | Greenhouse | `platforms/greenhouse.py` | Public API for discovery, standard form for apply | 80 |
+| 6 | Instahyre | `platforms/instahyre.py` | Curated tech, recruiter-led | 100 |
 
-Total daily ceiling: 190. Working target: 150 successful applies/day.
+**Global daily cap:** 300 (env: `DAILY_CAP_GLOBAL`). Per-platform soft ceilings default to 100 each (env: `DAILY_CAP_<PLATFORM>_CEILING`). The bot discovers candidates across all platforms, ranks by fit score, and applies to the top-N up to the global cap. Working target: 150 successful applies/day.
 
 ### 2.5 OUTREACH MODULE
 
@@ -118,20 +119,36 @@ Pulled from `profile.md`. Use this priority when ranking jobs the bot finds.
 1. **Pre-flight (30s)**
    - Load `.env`, validate every credential exists
    - Open `applications_log.csv`, build dedupe set of `(platform, job_url)` tuples
+   - Check global daily cap and per-platform ceilings against today's counts
    - Check yesterday's run summary; if any platform errored out, surface it first
 
-2. **Per platform, in order**
+2. **Phase 1 — Discovery (per platform, in order)**
    - Login → if it fails, skip platform and log the error (don't kill the whole run)
    - Run search queries (one keyword at a time, paginate up to 5 pages)
    - Score each job against `profile.md` and Section 3 above (see scoring rubric below)
-   - Apply if score ≥ threshold AND not already in log AND under daily cap
-   - Log every attempt: applied / skipped / error
-   - Random 5–15s delay between applications
+   - Dedupe against `applications_log.csv`; hard-skip check; threshold check
+   - If `--no-agent` is not set, run the LLM relevance agent (`core/relevance_agent.py`) as a semantic second-pass. The agent can override the keyword scorer's "apply" verdict to "queue" or "skip". Budget-capped at `MAX_RELEVANCE_API_CALLS_PER_DAY` (default 400); when exhausted, falls back to keyword scorer only. Requires `ANTHROPIC_API_KEY` in `.env`.
+   - Collect passing candidates into a shared pool (do NOT apply yet)
+   - Log skipped jobs to CSV
+   - Logout
 
-3. **Post-run (1 min)**
-   - Print summary: `{platform: applied, skipped, errored}` table
+3. **Phase 2 — Rank and allocate**
+   - Merge all candidates across platforms
+   - Sort by `fit_score` descending
+   - Allocate top-N up to `DAILY_CAP_GLOBAL`, respecting per-platform soft ceilings
+   - Overflow candidates logged as skipped
+
+4. **Phase 3 — Apply (per platform with allocated candidates)**
+   - Login → apply each allocated candidate → random 5–15s delay between applications
+   - Yellow-queue routing and form complexity detection still apply
+   - Logout
+
+5. **Post-run (1 min)**
+   - Print summary: `{platform: discovered, applied, skipped, errored}` table
    - Write summary row to `daily_summary.csv`
    - If `--email-summary` flag set, fire 7 PM digest
+
+**Single-platform mode** (`--platform X`): uses the legacy per-platform flow (no discovery/rank split). The cap is `min(DAILY_CAP_GLOBAL, platform ceiling)`.
 
 ### Scoring rubric (job → fit score 0.0–1.0)
 
@@ -169,14 +186,22 @@ job-bot/
 │   ├── naukri.py
 │   ├── linkedin.py
 │   ├── wellfound.py
-│   └── cutshort.py
+│   ├── cutshort.py
+│   ├── greenhouse.py       # Greenhouse Job Board API + Playwright forms
+│   └── instahyre.py        # Recruiter-led curated tech board
 ├── core/
 │   ├── __init__.py
 │   ├── types.py             # Job, FormDescriptor, ApplyResult, ProcessResult
-│   ├── scorer.py            # job → fit score
+│   ├── scorer.py            # job → fit score (keyword-based)
+│   ├── relevance_agent.py   # LLM semantic gate (Anthropic API, second-pass)
+│   ├── orchestrator.py      # Candidate pool, rank_and_allocate (global cap)
 │   ├── logger.py            # CSV logger + dedupe + review queue
 │   ├── browser.py           # Playwright setup, anti-detection
 │   └── notifier.py          # daily email digest
+├── config/
+│   └── greenhouse_companies.txt  # Board tokens for Greenhouse API
+├── prompts/
+│   └── relevance_agent.md   # Prompt template for LLM relevance checks
 ├── data/
 │   ├── applications_log.csv
 │   ├── daily_summary.csv
@@ -208,16 +233,25 @@ WELLFOUND_EMAIL=
 WELLFOUND_PASSWORD=
 CUTSHORT_EMAIL=
 CUTSHORT_PASSWORD=
+INSTAHYRE_EMAIL=
+INSTAHYRE_PASSWORD=
 
-DAILY_CAP_NAUKRI=75
-DAILY_CAP_LINKEDIN=40
-DAILY_CAP_WELLFOUND=30
-DAILY_CAP_CUTSHORT=25
+DAILY_CAP_GLOBAL=300
+DAILY_CAP_NAUKRI_CEILING=100
+DAILY_CAP_LINKEDIN_CEILING=100
+DAILY_CAP_WELLFOUND_CEILING=100
+DAILY_CAP_CUTSHORT_CEILING=100
+DAILY_CAP_INSTAHYRE_CEILING=100
 
 LOG_FILE=data/applications_log.csv
 SUMMARY_FILE=data/daily_summary.csv
 HEADLESS=true
 DRY_RUN=false
+
+# Relevance agent
+ANTHROPIC_API_KEY=
+RELEVANCE_MODEL=claude-sonnet-4-6
+MAX_RELEVANCE_API_CALLS_PER_DAY=400
 
 # Optional for daily digest
 SMTP_HOST=
@@ -254,10 +288,15 @@ A committed `.env.example` mirrors this with empty values. The real `.env` is in
 | column | example |
 |---|---|
 | `date` | `2026-04-28` |
+| `total_discovered` | `420` |
 | `total_applied` | `137` |
+| `naukri_discovered` | `180` |
 | `naukri_applied` | `74` |
+| `linkedin_discovered` | `120` |
 | `linkedin_applied` | `38` |
+| `wellfound_discovered` | `70` |
 | `wellfound_applied` | `15` |
+| `cutshort_discovered` | `50` |
 | `cutshort_applied` | `10` |
 | `total_skipped` | `42` |
 | `total_errors` | `3` |
@@ -268,21 +307,27 @@ A committed `.env.example` mirrors this with empty values. The real `.env` is in
 ## 10. RUNTIME COMMANDS
 
 ```bash
-# Full run, all platforms
+# Full run, all platforms (discover → rank → apply top-N)
 python apply.py
 
-# Dry run — score and log "would apply" without clicking
+# Dry run — discover and rank but never click Apply
 python apply.py --dry-run
 
-# Single platform
+# Single platform (legacy per-platform flow)
 python apply.py --platform naukri
 python apply.py --platform linkedin
 
 # Custom keyword
 python apply.py --keyword "founding member"
 
+# Override global daily cap for this run
+python apply.py --cap 50
+
 # Lower the apply threshold for a day (more volume, lower quality)
 python apply.py --threshold 0.4
+
+# Disable the LLM relevance agent (keyword scorer only)
+python apply.py --no-agent
 
 # Just email yesterday's summary, don't run the bot
 python apply.py --email-summary-only

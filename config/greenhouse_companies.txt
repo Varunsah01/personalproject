@@ -1,0 +1,51 @@
+# Greenhouse board tokens — one per line.
+# These are the {board_token} in https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs
+# Lines starting with # are ignored. Blank lines are ignored.
+# Verify tokens by visiting https://boards.greenhouse.io/{token}
+
+# Global tech (likely to have India / Remote roles)
+stripe
+anthropic
+openai
+notion
+ramp
+linear
+plaid
+discord
+coinbase
+figma
+airbnb
+databricks
+cloudflare
+twilio
+datadog
+elastic
+hashicorp
+gitlab
+airtable
+retool
+webflow
+
+# India-heavy / India-HQ
+razorpay
+cred
+meesho
+sliceit
+groww
+hasaborea
+browserstack
+chargebee
+clevertap
+leadsquared
+postman
+unacademy
+urbancompany
+zeta
+niyo
+
+# VC / investing
+sequoiacap
+mataborea
+peakxv
+elevation
+accel

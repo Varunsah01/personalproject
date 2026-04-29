@@ -105,7 +105,7 @@ For every job the bot considers applying to:
 2. **Hard-skip check.** If the JD contains any deal-breaker pattern from `profile.md` §15 (regex match on title and first 500 chars of JD), skip with `notes="hard skip: <reason>"`.
 3. **Score.** Compute `fit_score` per `CLAUDE.md` §6.
 4. **Threshold check.** Below tier threshold → skip with `notes="below threshold: 0.42"`.
-5. **Cap check.** Platform at daily cap → stop the platform run entirely; don't keep iterating.
+5. **Cap check.** In multi-platform mode, candidates are pooled and ranked by fit_score; the global cap (`DAILY_CAP_GLOBAL`, default 300) limits total applies across all platforms, and per-platform soft ceilings (`DAILY_CAP_<PLATFORM>_CEILING`, default 100) prevent any single platform from dominating. In single-platform mode, the effective cap is `min(global_cap, platform_ceiling)` — stop when reached.
 6. **Tier route.**
    - Green → apply directly
    - Yellow → write to `data/review_queue.csv` with full job context; do NOT apply
@@ -121,7 +121,7 @@ For every job the bot considers applying to:
 
 ### 3.3 Rate limiting & anti-detection
 
-- Daily caps per platform (defined in `.env`, defaults in `CLAUDE.md` §2): 75 / 40 / 30 / 25.
+- Global daily cap: `DAILY_CAP_GLOBAL` (default 300). Per-platform soft ceilings: `DAILY_CAP_<PLATFORM>_CEILING` (default 100 each).
 - Total session length per platform: max 90 minutes. Beyond that, log out and wait 4+ hours before re-running that platform.
 - Browser context: persistent profile per platform, stored in `data/browser_profiles/<platform>/`. Don't recreate every run — looks suspicious.
 - User agent: real, recent Chrome on Windows. Don't randomise per session.

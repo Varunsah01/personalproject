@@ -17,7 +17,7 @@ job_location: "span.loc-wrap"                         # inside .job-details in .
 job_experience: "span.exp-wrap"                       # inside .job-details in .row3 — verified 2026-04-28
 job_url: "a.title"                                    # same as title; read href attr — verified 2026-04-28
 job_snippet: "span.job-desc"                          # in .row4 — verified 2026-04-28
-next_page: "a.styles_btn-secondary__2AsIP"            # hash-based class, fragile. Inside .styles_pagination__oIvXh — verified 2026-04-28
+next_page: "a.styles_btn-secondary__2AsIP"            # end-of-results signal only (pagination built into URL). Hash-based, fragile — verified 2026-04-28
 
 # Job detail page
 apply_button: "button#apply-button"                   # class "styles_apply-button__uJI3A apply-button" — verified 2026-04-28
