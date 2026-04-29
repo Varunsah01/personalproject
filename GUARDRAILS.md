@@ -62,6 +62,20 @@ These actions are forbidden. Even if the user asks. Even if "just this once." Ev
 - **Never** write tests that always pass or that mock the very thing they're supposed to test.
 - **Never** commit commented-out code, `print("debug")` statements, or `TODO` without a date and an owner.
 
+### 1.7 Outreach (cold email & DM) rules
+
+- **Never** fabricate facts about a recipient (their role, company, posts, projects). If unverified, leave the field blank or skip the row.
+- **Never** claim mutual connections, shared employers, or shared schools that don't exist.
+- **Never** auto-send. Drafts always require Varun moving status from `drafted` to `queued` manually before the sender runs.
+- **Never** exceed 25 outbound messages/day total across all inboxes combined.
+- **Never** exceed 25 outbound messages/day per single inbox.
+- **Never** use scraped credential dumps, gated databases (Apollo, Lusha, ZoomInfo, RocketReach) via fake accounts, or leaked email lists. Public sources only. Free Hunter.io tier (50/mo) is allowed.
+- **Never** send to generic aliases (`info@`, `hello@`, `careers@`, `support@`, `contact@`) — person-specific addresses only.
+- **Never** include unsubscribe-bait, fake reply-to, or any header spoofing.
+- **Never** re-send to the same person within 14 days, regardless of which inbox is used.
+- **Never** send outside recipient-local 10:00–11:00 or 14:00–15:00 windows.
+- **Never** send on Saturday or Sunday in recipient timezone.
+
 ---
 
 ## 2. DO ONLY WITH EXPLICIT APPROVAL
@@ -80,6 +94,10 @@ These need a thumbs-up in the current chat session. A previous "yes" doesn't cou
 | Running `apply.py` without `--dry-run` for the first time on a new platform | First real apply on that platform must be supervised |
 | Tailoring resume content (vs. using master CV as-is) | Risk of fabrication |
 | Calling an external API at runtime | Cost, dependency, latency |
+| Running outreach pipeline against a new role tier the first time | Unsupervised targeting risk |
+| Adding a new Gmail inbox to the rotation pool | Deliverability / reputation risk |
+| Raising the per-day or per-inbox send cap above defaults | Spam risk |
+| First 20 sends after going live | Must be reviewed line-by-line in chat before status moves to `queued` |
 
 When in doubt, ask. The cost of a 10-second confirmation is much lower than the cost of an unintended side effect.
 
@@ -212,7 +230,8 @@ If any of these come up during a task, stop and check with Varun:
 - Never update this file as a side effect of another task.
 - Every update should bump the version line below and add a note in the changelog.
 
-**Version:** 1.0
-**Last updated:** 2026-04-28
+**Version:** 1.1
+**Last updated:** 2026-04-29
 **Changelog:**
+- 1.1 (2026-04-29): Added §1.7 outreach rules; extended §2 approval table for outreach actions.
 - 1.0 (2026-04-28): Initial version.

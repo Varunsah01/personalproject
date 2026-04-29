@@ -65,6 +65,26 @@ These are off-limits to the bot regardless of approval. They require Varun to ac
 - Filling fields that require fabrication (current CTC if not set, current employer if not set, references)
 - Anything that involves another human's data being entered or modified
 
+### 2.4 Outreach tier mapping
+
+The same Green/Yellow/Red model applies to the outreach pipeline.
+
+**Green (auto):**
+- Role research (scraping public job listings for context)
+- People identification (finding hiring managers / team leads from public sources)
+- Channel / email discovery (public LinkedIn profiles, company pages, free Hunter.io tier)
+- Draft writing (generating message drafts into `tracker.csv` with status `drafted`)
+- Status updates in `tracker.csv` (e.g., marking `sent`, `replied`, `closed`)
+- Archiving sent messages
+
+**Yellow (queue + approve):**
+- Nothing in outreach moves directly from `drafted` → `sent`. Varun manually changes status from `drafted` to `queued` — this is the approval signal. The sender only processes rows with status `queued`.
+
+**Red (manual only):**
+- Replies to inbound recruiter messages
+- Messages to anyone who has previously declined or asked not to be contacted
+- Messages mentioning sensitive personal context about the recipient (e.g., a recent loss, health issue, or personal event not shared publicly)
+
 ---
 
 ## 3. AUTOMATION RULES
@@ -179,6 +199,15 @@ Digest email contents:
 - Errors / throttles
 - Yesterday-vs-today delta
 
+### 3.8 Outreach rate limits and timing
+
+- **Daily cap:** 25 sends total across all inboxes combined. Hard ceiling — see `GUARDRAILS.md` §1.7.
+- **Per-inbox cap:** 25/day max per single inbox. Rotation picks the inbox with the lowest send count for the day.
+- **Send windows:** 10:00–11:00 OR 14:00–15:00 in the *recipient's local timezone*. Never outside these windows. Never on Saturday or Sunday in recipient timezone.
+- **Pipeline runs:** 5/day at 07:00, 11:00, 14:00, 17:00, 20:00 IST. Each run advances rows through the research → draft stages.
+- **Sender tick:** every 30 minutes between 09:00–22:00 IST. Each tick fires only `queued` rows whose `send_at_utc` falls within the past 30-minute window.
+- **Stop-file:** `outreach/STOP` — if this file exists, the sender exits immediately without sending. Same pattern as the apply-bot's `data/STOP`.
+
 ---
 
 ## 4. EVOLUTION RULES
@@ -240,7 +269,8 @@ To stop manually mid-run: `touch data/STOP` from another terminal. The bot check
 
 ## 7. VERSIONING
 
-**Version:** 1.0
-**Last updated:** 2026-04-28
+**Version:** 1.1
+**Last updated:** 2026-04-29
 **Changelog:**
+- 1.1 (2026-04-29): Added §2.4 outreach tier mapping; added §3.8 outreach rate limits and timing.
 - 1.0 (2026-04-28): Initial version. Three-tier scope model (Green/Yellow/Red), rate-limit and anti-detection rules, error-handling matrix, kill switches, evolution rules.

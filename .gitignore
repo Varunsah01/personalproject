@@ -22,6 +22,15 @@ build/
 .ruff_cache/
 .mypy_cache/
 
+# Outreach data (PII — tracker rows, drafts, sent archives)
+outreach/data/
+
+# OAuth tokens
+secrets/
+
+# Outreach env
+.env.outreach
+
 # OS
 .DS_Store
 Thumbs.db

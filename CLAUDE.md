@@ -14,6 +14,8 @@
 
 If two sources disagree, the higher-priority one wins. Surface the conflict before acting.
 
+Within the `outreach/` module, `outreach/CLAUDE.md` provides module-level overrides; it never relaxes parent guardrails, only adds module-specific ones.
+
 ---
 
 ## 1. PROJECT IDENTITY
@@ -21,7 +23,7 @@ If two sources disagree, the higher-priority one wins. Surface the conflict befo
 **Name:** job-bot
 **Owner:** Varun Sah (varunsah@yahoo.com, +91 8595062552, Delhi NCR)
 **LinkedIn:** https://www.linkedin.com/in/varun-sah/
-**Purpose:** Playwright-based Python bot that auto-applies to relevant jobs across Indian job boards. Target: 150 logged applications/day. Optimised for speed of getting interviews, not volume for its own sake.
+**Purpose:** Two-headed job-hunt automation: (1) Playwright-based auto-apply bot targeting Indian job boards, (2) Personalised cold-outreach pipeline that researches openings, identifies hiring contacts, drafts messages, and sends via rotated Gmail inboxes. Targets: 150 logged applies/day + up to 25 reviewed personalised messages/day.
 
 **Why this exists:** I'm transitioning from founding/operating to a full-time role. Manual applications don't scale. The bot does the volume; I spend my time on tailoring high-signal applications and prepping for interviews.
 
@@ -38,6 +40,17 @@ If two sources disagree, the higher-priority one wins. Surface the conflict befo
 | 5 | Instahyre | `platforms/instahyre.py` | (later) curated tech, recruiter-led | 20 |
 
 Total daily ceiling: 190. Working target: 150 successful applies/day.
+
+### 2.5 OUTREACH MODULE
+
+- **Location:** `outreach/`
+- **Pipeline stages (in order):** `role_researcher` → `people_finder` → `channel_finder` → `message_writer` → `sender`
+- **Module-level instructions:** `outreach/CLAUDE.md` (overrides for this sub-system; never relaxes parent guardrails)
+- **Voice & craft rules:** `outreach/prompts/principles.md`
+- **Status state machine:** `research_done` → `people_found` → `contact_found` → `drafted` → `queued` → `sent` → `replied` → `closed`
+- **Run cadence:** 5 pipeline runs/day + sender ticks every 30 min
+- **Daily cap:** 25 outbound messages total across all inboxes (hard rule — see `GUARDRAILS.md` §1.7)
+- **Human gate:** every message must be moved from `drafted` → `queued` by Varun before the sender touches it
 
 ---
 
@@ -301,6 +314,18 @@ python apply.py --email-summary-only
 8. `platforms/cutshort.py`
 9. `core/notifier.py` — 7 PM email digest
 10. Cron / Task Scheduler setup notes in README
+
+**Outreach module:**
+
+11. ✅ `GUARDRAILS.md` §1.7 outreach rules (done)
+12. `outreach/CLAUDE.md` + `outreach/prompts/principles.md`
+13. `outreach/lib/tracker.py` + `tracker.csv` schema + unit tests
+14. `outreach/lib/sender.py` + Gmail OAuth + inbox rotation + geo timing
+15. `.claude/agents/message_writer.md` (Agent 4)
+16. `.claude/agents/channel_finder.md` (Agent 3)
+17. `.claude/agents/people_finder.md` (Agent 2)
+18. `.claude/agents/role_researcher.md` (Agent 1)
+19. `outreach/pipeline.py` orchestrator + cron entries (5 runs/day)
 
 ---
 

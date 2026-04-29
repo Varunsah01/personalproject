@@ -280,4 +280,122 @@ Register-ScheduledTask `
 To check runs: **Task Scheduler → Task Scheduler Library → job-bot-daily → History tab**.
 
 To remove: `Unregister-ScheduledTask -TaskName "job-bot-daily" -Confirm:$false`
+
+---
+
+## Outreach pipeline
+
+Personalised cold-outreach system that researches openings, identifies contacts, discovers emails, drafts messages, and sends via rotated Gmail inboxes. Target: up to 25 reviewed messages/day.
+
+### How it works
+
+Five stages run in sequence, each advancing rows through `outreach/data/tracker.csv`:
+
+1. **Role Researcher** — searches Wellfound, YC, LinkedIn, Cutshort for openings matching target roles
+2. **People Finder** — identifies 2-3 hiring-team contacts per company from public sources
+3. **Channel Finder** — discovers verified email or marks LinkedIn-only
+4. **Message Writer** — drafts personalised 4-6 sentence emails with verifiable hooks
+5. **Sender** — sends queued messages via Gmail API within recipient-local time windows
+
+**Human gate:** every draft must be manually moved from `drafted` → `queued` by Varun before the sender touches it. No automation bridges this gap.
+
+### Scheduling (cron)
+
+The pipeline runs 5x/day. The sender ticks every 30 minutes. Both entries assume the machine clock is set to IST (Asia/Kolkata).
+
+```bash
+crontab -e
+```
+
+Paste these lines (adjust `BOTDIR` and ensure `claude` is on PATH):
+
+```cron
+BOTDIR=/Users/varunsah/Code/Job Automation
+
+# Outreach pipeline: 5 runs/day at IST 07:00, 11:00, 14:00, 17:00, 20:00
+0 7,11,14,17,20 * * * cd "$BOTDIR" && claude -p "$(cat outreach/prompts/run_pipeline.md)" >> data/logs/outreach.log 2>&1
+
+# Sender tick: every 30 min between 09:00-22:00 IST
+*/30 9-22 * * *       cd "$BOTDIR" && python3 outreach/lib/sender.py --tick >> data/logs/sender.log 2>&1
+```
+
+> **Note:** if your machine uses UTC, convert IST times: 07:00 IST = 01:30 UTC, 09:00 IST = 03:30 UTC, 22:00 IST = 16:30 UTC.
+
+### Setup
+
+**1. Google Cloud Console — OAuth registration**
+
+```bash
+# Create a project, enable Gmail API, create OAuth Desktop credentials
+# Download client_secret.json, then run once per inbox:
+python outreach/lib/setup_gmail_oauth.py \
+    --client-secret path/to/client_secret.json \
+    --inbox-address your.outreach1@gmail.com
+```
+
+**2. Configure `.env.outreach`**
+
+```bash
+cp .env.outreach.example .env.outreach
+# Fill in inbox addresses and token paths (1-5 inboxes supported)
+```
+
+**3. Verify subagents are loaded**
+
+```bash
+# List available agents (should show role_researcher, people_finder,
+# channel_finder, message_writer)
+ls .claude/agents/
+```
+
+### First-run procedure
+
+Do not go straight to production. Follow this sequence:
+
+1. **Dry-run all stages:**
+   ```bash
+   python outreach/pipeline.py --stage all --dry-run
+   ```
+   Verify agents load, read the right files, and produce sensible output.
+
+2. **Run research + people + channel for real** (small batch):
+   ```bash
+   python outreach/pipeline.py --stage research
+   python outreach/pipeline.py --stage people
+   python outreach/pipeline.py --stage channel
+   ```
+   Check `outreach/data/tracker.csv` — rows should be at `contact_found`.
+
+3. **Run message writer:**
+   ```bash
+   python outreach/pipeline.py --stage write
+   ```
+   Review every draft in `outreach/data/drafts/`. Reject anything generic, fabricated, or off-voice.
+
+4. **Hand-review 5 drafted messages** in chat. If 3+ are rejected, revisit `outreach/prompts/principles.md` before continuing.
+
+5. **Queue 1 message manually** — change its status from `drafted` to `queued` in tracker.csv.
+
+6. **Watch the sender fire it:**
+   ```bash
+   python outreach/lib/sender.py --tick
+   ```
+
+7. **Audit the .eml** in `outreach/data/sent/{date}/`. Confirm the subject, body, and recipient match what you approved.
+
+8. Once satisfied, enable the cron entries and let it run.
+
+### Emergency stop
+
+Create the STOP file to halt everything immediately:
+
+```bash
+touch outreach/STOP
+```
+
+Both the pipeline and the sender check for this file before every operation. Remove it to resume:
+
+```bash
+rm outreach/STOP
+```
 # personalproject

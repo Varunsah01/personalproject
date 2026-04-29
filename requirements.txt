@@ -15,3 +15,10 @@ PyYAML>=6.0
 pytest>=8.0
 # Async test support for platform orchestration smoke tests
 pytest-asyncio>=0.23
+
+# Outreach: Gmail API send via OAuth
+google-api-python-client>=2.0
+# Outreach: per-inbox OAuth consent flow (setup_gmail_oauth.py)
+google-auth-oauthlib>=1.0
+# Outreach: Gmail API auth transport
+google-auth-httplib2>=0.2
