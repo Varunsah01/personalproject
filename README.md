@@ -299,6 +299,43 @@ Five stages run in sequence, each advancing rows through `outreach/data/tracker.
 
 **Human gate:** every draft must be manually moved from `drafted` → `queued` by Varun before the sender touches it. No automation bridges this gap.
 
+### Daily review workflow
+
+Review drafted messages before the sender picks them up:
+
+```bash
+# Review up to 10 drafted messages (default)
+python outreach/review.py
+
+# Review a specific row
+python outreach/review.py --row-id <uuid>
+
+# Review more at once
+python outreach/review.py --limit 20
+```
+
+Actions per message:
+- **[a]pprove** -- moves `drafted` to `queued` (sender can now pick it up)
+- **[e]dit** -- opens the draft in `$EDITOR` (default: `vi`), then re-displays
+- **[s]kip** -- leaves at `drafted` for next session
+- **[r]eject** -- moves to `closed`, prompts for a reason (saved to notes)
+- **[q]uit** -- exits with a summary of the session
+
+The reviewer enforces cooldown (14 days) and suppression checks on approval. If a contact is blocked, it prints the reason and re-prompts.
+
+### Quick funnel check
+
+```bash
+# Full dashboard: funnel counts, inbox usage, stop-file status, last 5 updates
+python outreach/dashboard.py
+
+# Break funnel down by role tier (T1/T2/T3)
+python outreach/dashboard.py --by-tier
+
+# List all drafted rows awaiting review (copy-paste IDs for review.py)
+python outreach/dashboard.py --needs-review
+```
+
 ### Scheduling (cron)
 
 The pipeline runs 5x/day. The sender ticks every 30 minutes. Both entries assume the machine clock is set to IST (Asia/Kolkata).
@@ -317,6 +354,9 @@ BOTDIR=/Users/varunsah/Code/Job Automation
 
 # Sender tick: every 30 min between 09:00-22:00 IST
 */30 9-22 * * *       cd "$BOTDIR" && python3 outreach/lib/sender.py --tick >> data/logs/sender.log 2>&1
+
+# Outreach digest: daily 8 PM IST (14:30 UTC)
+30 14 * * *           cd "$BOTDIR" && python3 -m outreach.lib.digest --send >> data/logs/outreach-digest.log 2>&1
 ```
 
 > **Note:** if your machine uses UTC, convert IST times: 07:00 IST = 01:30 UTC, 09:00 IST = 03:30 UTC, 22:00 IST = 16:30 UTC.
@@ -374,7 +414,11 @@ Do not go straight to production. Follow this sequence:
 
 4. **Hand-review 5 drafted messages** in chat. If 3+ are rejected, revisit `outreach/prompts/principles.md` before continuing.
 
-5. **Queue 1 message manually** — change its status from `drafted` to `queued` in tracker.csv.
+5. **Review and approve drafts:**
+   ```bash
+   python outreach/review.py
+   ```
+   Walk through each drafted message: approve, edit, skip, or reject. Approved drafts move to `queued`; rejected ones move to `closed`.
 
 6. **Watch the sender fire it:**
    ```bash

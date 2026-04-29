@@ -8,11 +8,12 @@ Schema matches outreach/CLAUDE.md §2.  State machine matches §4.
 
 from __future__ import annotations
 
+import collections
 import csv
 import fcntl
 import uuid
 from dataclasses import asdict, dataclass, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Column order in tracker.csv (outreach/CLAUDE.md §2)
@@ -285,6 +286,31 @@ def update_status(
     raise KeyError(f"Row not found: {row_id}")
 
 
+def update_notes(
+    row_id: str, notes: str, path: Path | str = _DEFAULT_PATH
+) -> None:
+    """Set the notes field on a row, stamping last_updated.
+
+    Args:
+        row_id: UUID of the row.
+        notes: New notes value (replaces existing).
+        path: Path to tracker.csv.
+
+    Raises:
+        KeyError: If row_id is not found.
+    """
+    path = Path(path)
+    raw_rows = _read_all_raw(path)
+    for i, existing in enumerate(raw_rows):
+        if existing.get("id") == row_id:
+            existing["notes"] = notes
+            existing["last_updated"] = _now_iso()
+            raw_rows[i] = existing
+            _write_all(raw_rows, path)
+            return
+    raise KeyError(f"Row not found: {row_id}")
+
+
 def mark_sent(
     row_id: str, inbox: str, path: Path | str = _DEFAULT_PATH
 ) -> None:
@@ -359,3 +385,252 @@ def count_sent_today_by_inbox(
         ):
             count += 1
     return count
+
+
+# ---------------------------------------------------------------------------
+# Suppression list
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SUPPRESSION_PATH = Path("outreach/data/suppression.csv")
+_SUPPRESSION_COLUMNS = ["email", "linkedin_url", "reason", "added_at_utc"]
+
+
+def _init_suppression(path: Path) -> Path:
+    """Create suppression.csv with header row if it doesn't exist.
+
+    Args:
+        path: Path to suppression.csv.
+
+    Returns:
+        Resolved Path object.
+    """
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", newline="") as f:
+            csv.writer(f).writerow(_SUPPRESSION_COLUMNS)
+    return path
+
+
+def add_to_suppression(
+    email: str = "",
+    linkedin_url: str = "",
+    reason: str = "",
+    path: Path | str = _DEFAULT_SUPPRESSION_PATH,
+) -> None:
+    """Add an address to the suppression list.
+
+    Args:
+        email: Email address to suppress (optional if linkedin_url given).
+        linkedin_url: LinkedIn profile URL to suppress (optional if email given).
+        reason: Human-readable reason (e.g. "replied stop", "wrong person").
+        path: Path to suppression.csv.
+
+    Raises:
+        ValueError: If both email and linkedin_url are empty.
+    """
+    email = email.strip()
+    linkedin_url = linkedin_url.strip()
+    if not email and not linkedin_url:
+        raise ValueError("add_to_suppression: at least one of email or linkedin_url is required")
+
+    path = Path(path)
+    _init_suppression(path)
+
+    with open(path, "a", newline="") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            csv.writer(f).writerow([email, linkedin_url, reason, _now_iso()])
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def is_suppressed(
+    email: str = "",
+    linkedin_url: str = "",
+    path: Path | str = _DEFAULT_SUPPRESSION_PATH,
+) -> bool:
+    """Check whether an address is on the suppression list.
+
+    Args:
+        email: Email to check (optional if linkedin_url given).
+        linkedin_url: LinkedIn URL to check (optional if email given).
+        path: Path to suppression.csv.
+
+    Returns:
+        True if a matching entry exists, False otherwise (including if the
+        suppression file doesn't exist).
+
+    Raises:
+        ValueError: If both email and linkedin_url are empty.
+    """
+    email = email.strip().lower()
+    linkedin_url = linkedin_url.strip().lower()
+    if not email and not linkedin_url:
+        raise ValueError("is_suppressed: at least one of email or linkedin_url is required")
+
+    path = Path(path)
+    if not path.exists():
+        return False
+
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            row_email = row.get("email", "").strip().lower()
+            row_linkedin = row.get("linkedin_url", "").strip().lower()
+            if (email and row_email == email) or (linkedin_url and row_linkedin == linkedin_url):
+                return True
+    return False
+
+
+def load_suppression(
+    path: Path | str = _DEFAULT_SUPPRESSION_PATH,
+) -> list[dict[str, str]]:
+    """Load all entries from the suppression list.
+
+    Args:
+        path: Path to suppression.csv.
+
+    Returns:
+        List of dicts with keys email, linkedin_url, reason, added_at_utc.
+        Empty list if the file doesn't exist.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+# ---------------------------------------------------------------------------
+# Cooldown check
+# ---------------------------------------------------------------------------
+
+
+def is_in_cooldown(
+    email: str = "",
+    linkedin_url: str = "",
+    days: int = 14,
+    path: Path | str = _DEFAULT_PATH,
+) -> bool:
+    """Check whether a contact is within the re-send cooldown window.
+
+    Returns True if any row exists in the tracker where the email OR
+    linkedin_url matches AND ``sent_at_utc`` falls within the last ``days``
+    days (GUARDRAILS §1.7: never re-send within 14 days).
+
+    Args:
+        email: Recipient email (optional if linkedin_url given).
+        linkedin_url: Recipient LinkedIn URL (optional if email given).
+        days: Cooldown window in days (default 14).
+        path: Path to tracker.csv.
+
+    Returns:
+        True if the contact is in the cooldown window, False otherwise.
+
+    Raises:
+        ValueError: If both email and linkedin_url are empty.
+    """
+    email = email.strip().lower()
+    linkedin_url = linkedin_url.strip().lower()
+    if not email and not linkedin_url:
+        raise ValueError("is_in_cooldown: at least one of email or linkedin_url is required")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    for row in read_all(path):
+        if not row.sent_at_utc:
+            continue
+        try:
+            sent_at = datetime.fromisoformat(row.sent_at_utc)
+        except ValueError:
+            continue
+        if sent_at <= cutoff:
+            continue
+
+        row_email = row.email.strip().lower()
+        row_linkedin = row.person_linkedin.strip().lower()
+        if (email and row_email == email) or (linkedin_url and row_linkedin == linkedin_url):
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers
+# ---------------------------------------------------------------------------
+
+
+def promote_to_queued(
+    row_id: str,
+    path: Path | str = _DEFAULT_PATH,
+) -> Row:
+    """Transition a drafted row to queued after passing all guards.
+
+    This is the manual-approval gate (outreach/CLAUDE.md §4). It validates:
+    1. Row exists and is in ``drafted`` status.
+    2. The contact is not in the 14-day cooldown window.
+    3. The contact is not on the suppression list.
+
+    Args:
+        row_id: UUID of the row to promote.
+        path: Path to tracker.csv.
+
+    Returns:
+        The updated Row with status ``queued``.
+
+    Raises:
+        KeyError: If row_id is not found.
+        StateMachineError: If the row is not in ``drafted`` status, is in
+            cooldown, or is suppressed.
+    """
+    path = Path(path)
+    raw_rows = _read_all_raw(path)
+
+    target: dict[str, str] | None = None
+    for row in raw_rows:
+        if row.get("id") == row_id:
+            target = row
+            break
+
+    if target is None:
+        raise KeyError(f"Row not found: {row_id}")
+
+    current_status = target.get("status", "")
+    if current_status != "drafted":
+        raise StateMachineError(
+            f"promote_to_queued: row {row_id} is '{current_status}', expected 'drafted'"
+        )
+
+    row_email = target.get("email", "").strip()
+    row_linkedin = target.get("person_linkedin", "").strip()
+
+    # Only check cooldown/suppression when we have at least one identifier.
+    if row_email or row_linkedin:
+        if is_in_cooldown(row_email, row_linkedin, path=path):
+            raise StateMachineError(
+                f"promote_to_queued: row {row_id} is in 14-day cooldown"
+            )
+        if is_suppressed(row_email, row_linkedin):
+            raise StateMachineError(
+                f"promote_to_queued: row {row_id} is suppressed"
+            )
+
+    update_status(row_id, "queued", path)
+
+    for row in read_all(path):
+        if row.id == row_id:
+            return row
+
+    raise KeyError(f"Row not found after update: {row_id}")  # should never happen
+
+
+def funnel_counts(path: Path | str = _DEFAULT_PATH) -> dict[str, int]:
+    """Count tracker rows grouped by status.
+
+    Args:
+        path: Path to tracker.csv.
+
+    Returns:
+        Dict mapping status string to count. Only statuses with at least one
+        row are included. Empty dict if the tracker is empty.
+    """
+    return dict(collections.Counter(row.status for row in read_all(path)))

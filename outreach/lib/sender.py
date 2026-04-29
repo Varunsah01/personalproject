@@ -26,6 +26,7 @@ _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from googleapiclient.errors import HttpError  # noqa: E402
 from outreach.lib import tracker  # noqa: E402
 from outreach.lib.gmail_pool import InboxPool, NoInboxAvailableError, InboxConfig  # noqa: E402
 from outreach.lib.timing import next_send_window_utc  # noqa: E402
@@ -41,9 +42,57 @@ _DEFAULT_ENV_PATH = Path(".env.outreach")
 _GLOBAL_DAILY_CAP = 25
 
 
+_HARD_BOUNCE_SIGNALS = (
+    "550",
+    "5.1.1",
+    "5.2.1",
+    "invalid recipient",
+    "does not exist",
+    "no such user",
+    "user not found",
+    "mailbox unavailable",
+)
+
+
 def _is_generic_alias(email: str) -> bool:
     """Check if an email is a banned generic alias."""
     return any(email.lower().startswith(p) for p in _BANNED_PREFIXES)
+
+
+def _is_hard_bounce(e: HttpError) -> bool:
+    """Return True if the HttpError signals a permanent recipient-side delivery failure.
+
+    The Gmail API embeds SMTP rejection codes in the error body when the receiving
+    MTA synchronously rejects the message.  Most NDR bounces arrive later as
+    emails to the From inbox and are not detectable here.
+
+    Args:
+        e: HttpError raised by the Gmail API.
+
+    Returns:
+        True if the error body contains a known hard-bounce signal.
+    """
+    if e.resp.status != 400:
+        return False
+    body = e.content.decode("utf-8", errors="ignore").lower()
+    return any(signal in body for signal in _HARD_BOUNCE_SIGNALS)
+
+
+def _is_auth_error(e: HttpError) -> bool:
+    """Return True if the HttpError is an authentication or authorisation failure.
+
+    Args:
+        e: HttpError raised by the Gmail API.
+
+    Returns:
+        True for HTTP 401 or when the body contains known OAuth error tokens.
+    """
+    if e.resp.status == 401:
+        return True
+    body = e.content.decode("utf-8", errors="ignore").lower()
+    return any(
+        s in body for s in ("invalid_grant", "invalid_token", "token has been expired")
+    )
 
 
 def _load_credentials(token_path: Path):
@@ -140,6 +189,35 @@ def send_one(row: tracker.Row, inbox: InboxConfig) -> bool:
         logger.info("Sent to %s (%s) via %s", row.email, row.company, inbox.address)
         return True
 
+    except HttpError as e:
+        body_preview = e.content[:200].decode("utf-8", errors="ignore")
+        if _is_hard_bounce(e):
+            logger.error(
+                "permanent_failure: hard_bounce row %s to %s — %s",
+                row.id, row.email, body_preview,
+            )
+            tracker.add_to_suppression(
+                email=row.email,
+                linkedin_url=row.person_linkedin,
+                reason=f"hard_bounce HTTP{e.resp.status}",
+            )
+        elif _is_auth_error(e):
+            logger.error(
+                "auth_failed for inbox %s (row %s): HTTP %s — %s",
+                inbox.address, row.id, e.resp.status, body_preview,
+            )
+        elif e.resp.status == 429 or e.resp.status >= 500:
+            logger.warning(
+                "transient: will retry next tick (HTTP %s) row %s",
+                e.resp.status, row.id,
+            )
+        else:
+            logger.error(
+                "permanent_failure: HTTP %s row %s — %s",
+                e.resp.status, row.id, body_preview,
+            )
+        return False
+
     except Exception:
         logger.exception("Failed to send row %s to %s", row.id, row.email)
         return False
@@ -211,6 +289,24 @@ def tick(
         # Is this row ready to send now?
         if not (window_start <= send_at <= now):
             continue
+
+        # Cooldown guard — GUARDRAILS §1.7: never re-send within 14 days
+        if row.email or row.person_linkedin:
+            if tracker.is_in_cooldown(row.email, row.person_linkedin, path=tracker_path):
+                logger.warning(
+                    "Cooldown active for row %s (%s) — skipping", row.id, row.email
+                )
+                skipped_count += 1
+                continue
+
+        # Suppression guard
+        if row.email or row.person_linkedin:
+            if tracker.is_suppressed(row.email, row.person_linkedin):
+                logger.warning(
+                    "Suppressed: row %s (%s) — skipping", row.id, row.email
+                )
+                skipped_count += 1
+                continue
 
         if dry_run:
             logger.info("[DRY RUN] Would send row %s to %s at %s",
