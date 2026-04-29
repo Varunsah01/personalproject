@@ -378,6 +378,9 @@ BOTDIR=/Users/varunsah/Code/Job Automation
 # Sender tick: every 30 min between 09:00-22:00 IST
 */30 9-22 * * *       cd "$BOTDIR" && python3 outreach/lib/sender.py --tick >> data/logs/sender.log 2>&1
 
+# Reply watcher: every 30 min between 09:00-22:00 IST (same window as sender)
+*/30 9-22 * * *       cd "$BOTDIR" && python3 -m outreach.lib.reply_watcher --tick >> data/logs/reply_watcher.log 2>&1
+
 # Outreach digest: daily 8 PM IST (14:30 UTC)
 30 14 * * *           cd "$BOTDIR" && python3 -m outreach.lib.digest --send >> data/logs/outreach-digest.log 2>&1
 ```
