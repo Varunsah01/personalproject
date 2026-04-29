@@ -1,7 +1,7 @@
 # Pending Items & Codebase Audit
 
 **Date:** 2026-04-29 (updated)
-**Overall Completion:** ~97%
+**Overall Completion:** ~98%
 
 ---
 
@@ -19,6 +19,7 @@
 | `tests/test_review.py` | 9 | All pass | 0.04s |
 | `tests/test_digest.py` | 9 | All pass | 0.04s |
 | `tests/test_outreach_pipeline.py` | 8 | All pass | 0.02s |
+| `dashboard/web` (build) | — | Clean build | 0 TS errors, all routes registered |
 | **Total** | **217** | **All pass** | **~16s** |
 
 ---
@@ -52,6 +53,28 @@
 | `outreach/review.py` | COMPLETE | Interactive drafted→queued CLI ([a]pprove/[e]dit/[s]kip/[r]eject/[q]uit) |
 | `outreach/dashboard.py` | COMPLETE | Read-only funnel kanban, --by-tier, --needs-review |
 | `outreach/pipeline.py` | COMPLETE | Subprocess orchestrator, STOP-file, error-rate gate, log writes |
+| `outreach/lib/sync_to_sqlite.py` | COMPLETE | CSV→SQLite sync (one-shot + --watch mode), 60s cron |
+| `outreach/lib/writeback.py` | COMPLETE | Dashboard approve/reject write-back to tracker.csv |
+
+### Web dashboard (`dashboard/web/`)
+
+| File | Status | Notes |
+|---|---|---|
+| `app/page.tsx` | COMPLETE | Pipeline kanban — 7 columns, search, tier filter, card drawer |
+| `app/drafts/page.tsx` | COMPLETE | Drafts approval queue — mobile-optimized, sticky approve/reject CTAs |
+| `app/agents/page.tsx` | COMPLETE | Agent activity — structured log table, agent/status/text filters |
+| `app/api/pipeline/route.ts` | COMPLETE | GET — all rows grouped by status with staleness |
+| `app/api/drafts/route.ts` | COMPLETE | GET — drafted rows + body text from .md files |
+| `app/api/drafts/[id]/route.ts` | COMPLETE | POST — approve/reject, writes SQLite + tracker.csv |
+| `app/api/logs/route.ts` | COMPLETE | GET — agent logs with filters |
+| `app/api/stats/route.ts` | COMPLETE | GET — funnel counts, last sync, stale count |
+| `lib/db.ts` | COMPLETE | Singleton better-sqlite3 connection (WAL mode) |
+| `lib/queries.ts` | COMPLETE | All SQL queries with typed returns |
+| `lib/types.ts` | COMPLETE | TypeScript interfaces for all data shapes |
+| `lib/writeback.ts` | COMPLETE | Shell exec wrapper for writeback.py |
+| `hooks/usePolling.ts` | COMPLETE | Generic 5-second polling hook |
+| `components/TopNav.tsx` | COMPLETE | ~/outreach brand + page links + localhost:3000 |
+| Stack | — | Next.js 16 + React 19 + TypeScript + Tailwind v4 + better-sqlite3 |
 
 ### Tests
 
@@ -98,6 +121,8 @@
 | 19 | scripts/smoke_outreach.sh | DONE |
 | 20 | .claude/agents/ subagents (role_researcher, people_finder, channel_finder, message_writer) | DONE |
 | 21 | outreach/pipeline.py orchestrator + cron entries | DONE |
+| 22 | Web dashboard (Next.js) — pipeline kanban, drafts approval, activity log | DONE |
+| 23 | SQLite sync script + write-back helper | DONE |
 
 ---
 
@@ -115,6 +140,7 @@ None. All code complete and tested.
 | `.env.outreach` file with Gmail OAuth tokens | **P0** | Missing | Sender cannot pick inbox without this |
 | Gmail OAuth token setup | **P0** | Not done | Run `python setup_gmail_oauth.py` per README to generate token JSON files |
 | Stale error entries in `applications_log.csv` | **P0** | Present | 4 `auth_failed` rows tripping 25% error-rate circuit breaker |
+| Dashboard cron (sync_to_sqlite every 60s) | **P1** | Not done | Add `* * * * * ... sync_to_sqlite.py` to crontab |
 | Headful seed session — Wellfound | **P1** | Not done | Kasada protection may block headless login |
 | Headful seed session — Cutshort | **P1** | Not done | Email/password login removed; needs persistent session via Google OAuth |
 | Wellfound selectors verification | **P1** | Unverified | `data-test` attrs are best-guess; verify on live session |

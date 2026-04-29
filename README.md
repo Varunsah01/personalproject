@@ -27,6 +27,8 @@ cp .env.example .env
 
 ## Usage
 
+> **Auto-apply is disabled by default.** Set `AUTO_APPLY_ENABLED=true` in `.env` to enable Playwright-based applying (see `.env.example` for the full comment block and ToS reminder).
+
 ```bash
 # Full run, all platforms
 python apply.py

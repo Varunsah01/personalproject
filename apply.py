@@ -1215,6 +1215,17 @@ def run(args: argparse.Namespace) -> None:
         )
         return
 
+    # Feature flag: auto-apply is off by default (AUTO_APPLY_ENABLED in .env).
+    # Placed here so even a misconfigured cron job exits cleanly before any
+    # platform code runs. --review-queue and --email-summary-only are not
+    # gated by this flag because they don't trigger Playwright auto-apply.
+    if os.getenv("AUTO_APPLY_ENABLED", "false").lower() != "true":
+        logger.info(
+            "Auto-apply disabled by feature flag — exiting cleanly. "
+            "Use outreach pipeline instead."
+        )
+        return
+
     asyncio.run(_run_async(args))
 
 

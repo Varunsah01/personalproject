@@ -35,6 +35,10 @@ secrets/
 # Outreach env
 .env.outreach
 
+# Dashboard
+dashboard/web/node_modules/
+dashboard/web/.next/
+
 # OS
 .DS_Store
 Thumbs.db
