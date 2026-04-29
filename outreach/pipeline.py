@@ -78,6 +78,10 @@ def _parse_error_rate(output: str) -> tuple[int, int]:
     containing "error" or "failed" (case-insensitive) as errored rows,
     and all table-like lines (starting with |) as total rows processed.
 
+    "skipped" is intentionally NOT counted as an error — agents legitimately
+    skip rows (stealth startups, no public team page, cooldown hits, etc.)
+    and this is normal pipeline behaviour, not a failure signal.
+
     This is best-effort — agent output is natural language, not structured.
     If parsing fails, returns (0, 0) so the pipeline doesn't halt on
     unparseable output.
@@ -106,7 +110,7 @@ def _parse_error_rate(output: str) -> tuple[int, int]:
     errored = sum(
         1
         for row in data_rows
-        if re.search(r"\b(error|failed|skipped)\b", row, re.IGNORECASE)
+        if re.search(r"\b(error|failed)\b", row, re.IGNORECASE)
     )
 
     return (errored, total)

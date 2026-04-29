@@ -245,7 +245,7 @@ directory structure doesn't match `outreach/CLAUDE.md §3`.
 
 | # | Item | Severity | Status |
 |---|---|---|---|
-| CRITICAL-1 | `_parse_error_rate` counts "skipped" as errors → false pipeline halts | **Critical** | Unfixed — needs one-function change + test |
+| CRITICAL-1 | `_parse_error_rate` counts "skipped" as errors → false pipeline halts | **Critical** | Fixed (2026-04-29) |
 | A | Relative paths, no CWD enforcement | Low | Unfixed — convention risk |
 | B | `upsert()` collapses blank-person_name rows for same company | Low | Unfixed — mitigated by agent dedupe logic |
 | C | `mark_sent` two-write-cycle TOCTOU | Low | Unfixed — low risk in practice |

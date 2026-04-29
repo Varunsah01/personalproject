@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from outreach.lib.tracker import Row, read_all, update_status, upsert
-from outreach.pipeline import STAGE_ORDER, StageResult, run_pipeline
+from outreach.pipeline import STAGE_ORDER, StageResult, _parse_error_rate, run_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +224,24 @@ class TestClaudeNotOnPath:
         assert len(results) == 1
         assert results[0].exit_code == 127
         assert results[0].stage == "research"
+
+
+class TestSkippedNotCountedAsError:
+    """'skipped' rows are normal outcomes and must not inflate error rate."""
+
+    def test_skipped_rows_not_counted_as_errors(self):
+        output = """\
+| company | person | status |
+|---|---|---|
+| Alpha | Alice | done |
+| Beta | — | skipped |
+| Gamma | Carol | done |
+| Delta | — | skipped |
+| Epsilon | Eve | done |
+"""
+        errored, total = _parse_error_rate(output)
+        assert total == 5
+        assert errored == 0
 
 
 class TestLogFileWritten:
