@@ -25,6 +25,16 @@ cp .env.example .env
 # Edit .env with your platform credentials
 ```
 
+## First-time setup
+
+Run the setup wizard to verify dependencies, create directories, copy env files, and validate configuration:
+
+```bash
+bash scripts/setup.sh
+```
+
+The wizard checks Python >= 3.11, Node >= 20, creates missing directories (`secrets/`, `outreach/data/drafts/`, `outreach/data/sent/`, `data/logs/`), copies `.env.example` and `.env.outreach.example` if needed, validates inbox configuration, offers to run Gmail OAuth for unconfigured inboxes, seeds `tracker.csv`, and runs the smoke test. Each step prints a green check or red X with a fix hint.
+
 ## Usage
 
 > **Auto-apply is disabled by default.** Set `AUTO_APPLY_ENABLED=true` in `.env` to enable Playwright-based applying (see `.env.example` for the full comment block and ToS reminder).
