@@ -38,11 +38,24 @@ def reject(row_id: str, reason: str, notes: str) -> None:
     tracker.update_status(row_id, "closed", TRACKER_PATH)
 
 
+def linkedin_messaged(row_id: str, notes: str) -> None:
+    """Close a linkedin_queue row after Varun manually sent the DM."""
+    from datetime import datetime, timezone
+
+    combined = f"manual_linkedin_dm: {datetime.now(timezone.utc).isoformat()}"
+    if notes:
+        combined += f" — {notes}"
+    tracker.update_notes(row_id, combined, TRACKER_PATH)
+    tracker.update_status(row_id, "closed", TRACKER_PATH)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Dashboard write-back to tracker.csv")
     parser.add_argument("--row-id", required=True, help="UUID of the tracker row")
     parser.add_argument(
-        "--action", choices=["approve", "reject"], required=True
+        "--action",
+        choices=["approve", "reject", "linkedin_messaged"],
+        required=True,
     )
     parser.add_argument("--reason", default="", help="Rejection reason chip")
     parser.add_argument("--notes", default="", help="Freeform rejection note")
@@ -51,9 +64,12 @@ def main() -> None:
     if args.action == "approve":
         approve(args.row_id)
         print(f"OK: approved {args.row_id}")
-    else:
+    elif args.action == "reject":
         reject(args.row_id, args.reason, args.notes)
         print(f"OK: rejected {args.row_id}")
+    else:
+        linkedin_messaged(args.row_id, args.notes)
+        print(f"OK: linkedin_messaged {args.row_id}")
 
 
 if __name__ == "__main__":

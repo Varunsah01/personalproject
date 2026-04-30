@@ -67,6 +67,7 @@ def _mock_service_with_reply(reply_email: str):
             },
             {
                 "id": "msg-002",
+                "snippet": "Thanks for reaching out, let's chat next week.",
                 "payload": {
                     "headers": [
                         {"name": "From", "value": reply_email},
@@ -172,7 +173,8 @@ class TestFindReplies:
         replied = _find_replies(svc, rows)
 
         assert len(replied) == 1
-        assert replied[0].email == "hiring@acme.com"
+        row, snippet = replied[0]
+        assert row.email == "hiring@acme.com"
 
     def test_no_reply_returns_empty(self):
         svc = _mock_service_no_reply()
@@ -223,7 +225,7 @@ class TestTickIntegration:
 
         # Only alice@alpha.com gets a reply
         def mock_find_replies(service, rows):
-            return [r for r in rows if r.email == "alice@alpha.com"]
+            return [(r, "Thanks, let's chat") for r in rows if r.email == "alice@alpha.com"]
 
         with (
             patch("outreach.lib.reply_watcher._build_service", return_value=MagicMock()),
@@ -253,7 +255,7 @@ class TestTickIntegration:
                             "OUTREACH_INBOX_1_TOKEN_PATH=/tokens/out.json\n")
 
         def mock_find_replies(service, rows):
-            return rows  # all replied
+            return [(r, "") for r in rows]  # all replied
 
         with (
             patch("outreach.lib.reply_watcher._build_service", return_value=MagicMock()),
@@ -302,3 +304,49 @@ class TestTickIntegration:
             tick(tracker_path=csv_path, stop_path=stop_path)
 
         mock_build.assert_not_called()
+
+
+class TestFollowUpSentReplies:
+    """Reply watcher should also detect replies to follow-up emails."""
+
+    def test_follow_up_sent_rows_also_checked(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        stop_path = tmp_path / "STOP"
+        env_path = tmp_path / ".env.outreach"
+        env_path.write_text(
+            "OUTREACH_INBOX_1_ADDRESS=out@gmail.com\n"
+            "OUTREACH_INBOX_1_TOKEN_PATH=/tokens/out.json\n"
+        )
+
+        # Create a row and walk to follow_up_sent
+        row = Row(
+            company="FollowCo", person_name="Fay",
+            email="fay@followco.com", subject="Growth role",
+            assigned_inbox="out@gmail.com", status="research_done",
+        )
+        upsert(row, csv_path)
+        rid = read_all(csv_path)[0].id
+        update_status(rid, "people_found", csv_path)
+        update_status(rid, "contact_found", csv_path)
+        update_status(rid, "drafted", csv_path)
+        update_status(rid, "queued", csv_path)
+        mark_sent(rid, "out@gmail.com", csv_path)
+        update_status(rid, "follow_up_drafted", csv_path)
+        update_status(rid, "follow_up_queued", csv_path)
+        update_status(rid, "follow_up_sent", csv_path)
+
+        # Fay replied
+        def mock_find_replies(service, rows):
+            return [(r, "Sounds good") for r in rows if r.email == "fay@followco.com"]
+
+        with (
+            patch("outreach.lib.reply_watcher._build_service", return_value=MagicMock()),
+            patch("outreach.lib.reply_watcher._find_replies", side_effect=mock_find_replies),
+            patch("outreach.lib.reply_watcher.InboxPool.load_from_env",
+                  return_value=_mock_pool()),
+        ):
+            tick(tracker_path=csv_path, env_path=env_path, stop_path=stop_path)
+
+        updated = read_all(csv_path)[0]
+        assert updated.status == "replied"
+        assert updated.replied == "true"

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS outreach_rows (
     replied         TEXT NOT NULL DEFAULT '',
     notes           TEXT NOT NULL DEFAULT '',
     last_updated    TEXT NOT NULL DEFAULT '',
+    message_id      TEXT NOT NULL DEFAULT '',
     synced_at       TEXT NOT NULL DEFAULT ''
 );
 
@@ -95,6 +96,15 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA_SQL)
+
+    # Migrate: add message_id column if missing (added in follow-up cadence)
+    cursor = conn.execute("PRAGMA table_info(outreach_rows)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    if "message_id" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE outreach_rows ADD COLUMN message_id TEXT NOT NULL DEFAULT ''"
+        )
+
     return conn
 
 
@@ -112,8 +122,8 @@ def sync_tracker(conn: sqlite3.Connection) -> int:
                 relationship_type, email, email_confidence, linkedin_only,
                 hook, subject, body_path, status, assigned_inbox,
                 send_at_utc, sent_at_utc, replied, notes, last_updated,
-                synced_at)
-               VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?)""",
+                message_id, synced_at)
+               VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?)""",
             values,
         )
 

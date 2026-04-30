@@ -9,7 +9,7 @@ const WRITEBACK_SCRIPT = path.join(
 
 export function writeBack(
   rowId: string,
-  action: "approve" | "reject",
+  action: "approve" | "reject" | "linkedin_messaged",
   reason?: string,
   notes?: string
 ): string {

@@ -40,6 +40,9 @@ _STATUS_ORDER = [
     "drafted",
     "queued",
     "sent",
+    "follow_up_drafted",
+    "follow_up_queued",
+    "follow_up_sent",
     "replied",
     "closed",
 ]
@@ -108,7 +111,7 @@ def build_body(date: str, tracker_path: Path = _DEFAULT_TRACKER_PATH) -> str:
     ]
     sent_today = [
         r for r in all_rows
-        if r.status == "sent" and r.sent_at_utc.startswith(date)
+        if r.status in ("sent", "follow_up_sent") and r.sent_at_utc.startswith(date)
     ]
     sent_today.sort(key=lambda r: r.sent_at_utc)
 

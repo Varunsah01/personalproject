@@ -55,6 +55,10 @@ export interface DraftsResponse {
   drafts: DraftRow[];
 }
 
+export interface LinkedInQueueResponse {
+  rows: DraftRow[];
+}
+
 export interface LogsResponse {
   logs: AgentLog[];
   total: number;
@@ -73,10 +77,56 @@ export interface DecisionRequest {
   notes?: string;
 }
 
+export interface ChatMessage {
+  ts: string;
+  role: "user" | "assistant";
+  content: string;
+  agent: string | null;
+}
+
+export interface ChatHistoryResponse {
+  messages: ChatMessage[];
+}
+
+// Analytics types
+
+export interface FunnelBar {
+  status: string;
+  count: number;
+}
+
+export interface TierReplyRate {
+  tier: string;
+  sent: number;
+  replied: number;
+  rate: number;
+}
+
+export interface HookSource {
+  domain: string;
+  count: number;
+  replied: number;
+  rate: number;
+}
+
+export interface InboxUsage {
+  inbox: string;
+  sent: number;
+  cap: number;
+}
+
+export interface AnalyticsResponse {
+  funnel7d: FunnelBar[];
+  replyRate: TierReplyRate[];
+  topHooks: HookSource[];
+  inboxUsage: InboxUsage[];
+}
+
 export const PIPELINE_STATUSES = [
   "research_done",
   "people_found",
   "contact_found",
+  "linkedin_queue",
   "drafted",
   "queued",
   "sent",
@@ -89,6 +139,7 @@ export const STATUS_LABELS: Record<PipelineStatus, string> = {
   research_done: "research",
   people_found: "people",
   contact_found: "contact",
+  linkedin_queue: "linkedin",
   drafted: "drafted",
   queued: "queued",
   sent: "sent",

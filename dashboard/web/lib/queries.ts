@@ -1,7 +1,15 @@
 import fs from "fs";
 import path from "path";
 import { getDb, PROJECT_ROOT } from "./db";
-import type { OutreachRow, DraftRow, AgentLog } from "./types";
+import type {
+  OutreachRow,
+  DraftRow,
+  AgentLog,
+  FunnelBar,
+  TierReplyRate,
+  HookSource,
+  InboxUsage,
+} from "./types";
 import { PIPELINE_STATUSES } from "./types";
 
 function computeStaleness(row: OutreachRow): OutreachRow {
@@ -97,6 +105,32 @@ export function getDraftedRows(): DraftRow[] {
   });
 }
 
+export function getLinkedInQueueRows(): DraftRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM outreach_rows WHERE status = 'linkedin_queue' ORDER BY role_tier ASC, last_updated DESC`
+    )
+    .all() as OutreachRow[];
+
+  return rows.map((row) => {
+    let bodyText = "";
+    if (row.body_path) {
+      const fullPath = path.resolve(PROJECT_ROOT, row.body_path);
+      try {
+        bodyText = fs.readFileSync(fullPath, "utf-8");
+      } catch {
+        bodyText = "[ draft file not found ]";
+      }
+    }
+    return {
+      ...computeStaleness(row),
+      body_text: bodyText,
+      manager_score: null,
+    };
+  });
+}
+
 export function getRowById(id: string): OutreachRow | null {
   const db = getDb();
   const row = db
@@ -114,7 +148,7 @@ export function updateRowStatus(id: string, status: string): void {
 
 export function recordDecision(
   rowId: string,
-  action: "approve" | "reject",
+  action: "approve" | "reject" | "linkedin_messaged",
   reason: string,
   notes: string
 ): void {
@@ -160,4 +194,143 @@ export function getAgentLogs(filters: {
     .get(...params) as { n: number };
 
   return { logs, total: totalRow.n };
+}
+
+
+// ---------------------------------------------------------------------------
+// Analytics queries
+// ---------------------------------------------------------------------------
+
+const FUNNEL_ORDER = [
+  "research_done",
+  "people_found",
+  "contact_found",
+  "linkedin_queue",
+  "drafted",
+  "queued",
+  "sent",
+  "replied",
+  "closed",
+];
+
+export function getFunnelLast7Days(): FunnelBar[] {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT status, COUNT(*) as count
+       FROM outreach_rows
+       WHERE last_updated >= ? AND last_updated != ''
+       GROUP BY status`
+    )
+    .all(cutoff) as { status: string; count: number }[];
+
+  const map: Record<string, number> = {};
+  for (const r of rows) map[r.status] = r.count;
+
+  return FUNNEL_ORDER.map((status) => ({
+    status,
+    count: map[status] || 0,
+  }));
+}
+
+export function getReplyRateByTier(): TierReplyRate[] {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT
+         role_tier,
+         COUNT(*) FILTER (WHERE status IN ('sent','follow_up_sent','follow_up_drafted','follow_up_queued','replied','closed') AND sent_at_utc != '') as sent,
+         COUNT(*) FILTER (WHERE replied = 'true') as replied
+       FROM outreach_rows
+       WHERE last_updated >= ? AND last_updated != '' AND role_tier != ''
+       GROUP BY role_tier
+       ORDER BY role_tier ASC`
+    )
+    .all(cutoff) as { role_tier: string; sent: number; replied: number }[];
+
+  return rows.map((r) => ({
+    tier: r.role_tier,
+    sent: r.sent,
+    replied: r.replied,
+    rate: r.sent > 0 ? r.replied / r.sent : 0,
+  }));
+}
+
+export function getTopHookSources(): HookSource[] {
+  const db = getDb();
+  // Get rows that have drafts with body_path set
+  const rows = db
+    .prepare(
+      `SELECT id, body_path, status, replied FROM outreach_rows
+       WHERE body_path != '' AND body_path IS NOT NULL`
+    )
+    .all() as { id: string; body_path: string; status: string; replied: string }[];
+
+  // Parse hook_source_url from draft frontmatter, count by domain
+  const domainStats: Record<string, { total: number; replied: number }> = {};
+
+  for (const row of rows) {
+    const fullPath = path.resolve(PROJECT_ROOT, row.body_path);
+    let content: string;
+    try {
+      content = fs.readFileSync(fullPath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    // Parse YAML frontmatter for hook_source_url
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+
+    const urlMatch = fmMatch[1].match(/hook_source_url:\s*(.+)/);
+    if (!urlMatch) continue;
+
+    let domain: string;
+    try {
+      domain = new URL(urlMatch[1].trim()).hostname.replace(/^www\./, "");
+    } catch {
+      continue;
+    }
+
+    if (!domainStats[domain]) domainStats[domain] = { total: 0, replied: 0 };
+    domainStats[domain].total++;
+    if (row.replied === "true") domainStats[domain].replied++;
+  }
+
+  return Object.entries(domainStats)
+    .map(([domain, s]) => ({
+      domain,
+      count: s.total,
+      replied: s.replied,
+      rate: s.total > 0 ? s.replied / s.total : 0,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+}
+
+export function getInboxUsageToday(): InboxUsage[] {
+  const db = getDb();
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const cutoff = todayStart.toISOString();
+
+  const rows = db
+    .prepare(
+      `SELECT assigned_inbox, COUNT(*) as sent
+       FROM outreach_rows
+       WHERE sent_at_utc >= ? AND sent_at_utc != '' AND assigned_inbox != ''
+       GROUP BY assigned_inbox`
+    )
+    .all(cutoff) as { assigned_inbox: string; sent: number }[];
+
+  // Default cap from .env.outreach is 25 per inbox
+  const CAP = 25;
+
+  return rows.map((r) => ({
+    inbox: r.assigned_inbox,
+    sent: r.sent,
+    cap: CAP,
+  }));
 }

@@ -18,6 +18,7 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from email.utils import make_msgid
 from pathlib import Path
 
 # When run directly (python outreach/lib/sender.py), fix sys.path
@@ -139,7 +140,7 @@ def _archive_eml(
     return eml_path
 
 
-def send_one(row: tracker.Row, inbox: InboxConfig) -> bool:
+def send_one(row: tracker.Row, inbox: InboxConfig) -> str | None:
     """Send one outreach email via Gmail API.
 
     Reads the draft from row.body_path, builds the message, sends it,
@@ -150,23 +151,23 @@ def send_one(row: tracker.Row, inbox: InboxConfig) -> bool:
         inbox: InboxConfig for the sending Gmail account.
 
     Returns:
-        True on success, False on error.
+        The RFC 5322 Message-ID on success, None on error.
     """
     # Guard: never send to generic aliases (GUARDRAILS §1.7)
     if _is_generic_alias(row.email):
         logger.error("Blocked: generic alias %s (row %s)", row.email, row.id)
-        return False
+        return None
 
     # Guard: email must be present
     if not row.email.strip():
         logger.error("No email address for row %s", row.id)
-        return False
+        return None
 
     # Read draft body
     draft_path = Path(row.body_path)
     if not draft_path.exists():
         logger.error("Draft not found: %s (row %s)", draft_path, row.id)
-        return False
+        return None
     body = draft_path.read_text(encoding="utf-8")
 
     try:
@@ -180,6 +181,9 @@ def send_one(row: tracker.Row, inbox: InboxConfig) -> bool:
         msg["From"] = inbox.address
         msg["To"] = row.email
 
+        msg_id = make_msgid(domain=inbox.address.split("@")[1])
+        msg["Message-ID"] = msg_id
+
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
         service.users().messages().send(
             userId="me", body={"raw": raw}
@@ -187,7 +191,7 @@ def send_one(row: tracker.Row, inbox: InboxConfig) -> bool:
 
         _archive_eml(row.id, row.subject, inbox.address, row.email, body)
         logger.info("Sent to %s (%s) via %s", row.email, row.company, inbox.address)
-        return True
+        return msg_id
 
     except HttpError as e:
         body_preview = e.content[:200].decode("utf-8", errors="ignore")
@@ -216,11 +220,119 @@ def send_one(row: tracker.Row, inbox: InboxConfig) -> bool:
                 "permanent_failure: HTTP %s row %s — %s",
                 e.resp.status, row.id, body_preview,
             )
-        return False
+        return None
 
     except Exception:
         logger.exception("Failed to send row %s to %s", row.id, row.email)
-        return False
+        return None
+
+
+def send_one_followup(row: tracker.Row, inbox: InboxConfig) -> str | None:
+    """Send a follow-up email with In-Reply-To threading.
+
+    Reads the follow-up draft from row.body_path, sets In-Reply-To and
+    References headers using row.message_id, and sends via Gmail API.
+
+    Args:
+        row: Tracker row with status ``follow_up_queued``.
+        inbox: InboxConfig for the sending Gmail account.
+
+    Returns:
+        The new message's Message-ID on success, None on error.
+    """
+    if _is_generic_alias(row.email):
+        logger.error("Blocked: generic alias %s (row %s)", row.email, row.id)
+        return None
+
+    if not row.email.strip():
+        logger.error("No email address for row %s", row.id)
+        return None
+
+    draft_path = Path(row.body_path)
+    if not draft_path.exists():
+        logger.error("Follow-up draft not found: %s (row %s)", draft_path, row.id)
+        return None
+    body = draft_path.read_text(encoding="utf-8")
+
+    try:
+        from googleapiclient.discovery import build
+
+        creds = _load_credentials(inbox.oauth_token_path)
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = f"Re: {row.subject}"
+        msg["From"] = inbox.address
+        msg["To"] = row.email
+
+        followup_msg_id = make_msgid(domain=inbox.address.split("@")[1])
+        msg["Message-ID"] = followup_msg_id
+
+        if row.message_id:
+            msg["In-Reply-To"] = row.message_id
+            msg["References"] = row.message_id
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+        service.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+
+        _archive_eml(
+            row.id + "_followup", row.subject, inbox.address, row.email, body
+        )
+        logger.info(
+            "Follow-up sent to %s (%s) via %s", row.email, row.company, inbox.address
+        )
+        return followup_msg_id
+
+    except HttpError as e:
+        body_preview = e.content[:200].decode("utf-8", errors="ignore")
+        if _is_hard_bounce(e):
+            logger.error(
+                "permanent_failure: hard_bounce follow-up row %s to %s — %s",
+                row.id, row.email, body_preview,
+            )
+            tracker.add_to_suppression(
+                email=row.email,
+                linkedin_url=row.person_linkedin,
+                reason=f"hard_bounce HTTP{e.resp.status}",
+            )
+        elif _is_auth_error(e):
+            logger.error(
+                "auth_failed for inbox %s (follow-up row %s): HTTP %s — %s",
+                inbox.address, row.id, e.resp.status, body_preview,
+            )
+        elif e.resp.status == 429 or e.resp.status >= 500:
+            logger.warning(
+                "transient: will retry next tick (HTTP %s) follow-up row %s",
+                e.resp.status, row.id,
+            )
+        else:
+            logger.error(
+                "permanent_failure: HTTP %s follow-up row %s — %s",
+                e.resp.status, row.id, body_preview,
+            )
+        return None
+
+    except Exception:
+        logger.exception(
+            "Failed to send follow-up row %s to %s", row.id, row.email
+        )
+        return None
+
+
+def _store_message_id(
+    row_id: str, message_id: str, path: Path
+) -> None:
+    """Store the Message-ID on a tracker row after successful send."""
+    raw_rows = tracker._read_all_raw(path)
+    for i, existing in enumerate(raw_rows):
+        if existing.get("id") == row_id:
+            existing["message_id"] = message_id
+            existing["last_updated"] = tracker._now_iso()
+            raw_rows[i] = existing
+            tracker._write_all(raw_rows, path)
+            return
 
 
 def tick(
@@ -322,20 +434,93 @@ def tick(
             break
 
         # Send
-        if send_one(row, inbox):
+        msg_id = send_one(row, inbox)
+        if msg_id:
             tracker.mark_sent(row.id, inbox.address, tracker_path)
+            _store_message_id(row.id, msg_id, tracker_path)
             sent_count += 1
         else:
             skipped_count += 1
 
+    # ── Follow-up sends ─────────────────────────────────────────────
+    followup_rows = tracker.read_by_status("follow_up_queued", tracker_path)
+    followup_sent = 0
+    followup_scheduled = 0
+    followup_skipped = 0
+
+    for row in followup_rows:
+        if stop_path.exists():
+            logger.warning("STOP file appeared mid-tick — halting follow-ups")
+            break
+
+        if (global_sent + sent_count + followup_sent) >= _GLOBAL_DAILY_CAP:
+            logger.info("Global cap reached mid-tick — halting follow-ups")
+            break
+
+        # Compute or reuse send_at_utc
+        if row.send_at_utc:
+            send_at = datetime.fromisoformat(row.send_at_utc)
+        else:
+            send_at = next_send_window_utc(row.person_country or "India", now)
+            row.send_at_utc = send_at.isoformat()
+            tracker.upsert(row, tracker_path)
+            followup_scheduled += 1
+
+        if not (window_start <= send_at <= now):
+            continue
+
+        # Cooldown guard
+        if row.email or row.person_linkedin:
+            if tracker.is_in_cooldown(row.email, row.person_linkedin, path=tracker_path):
+                logger.warning(
+                    "Cooldown active for follow-up row %s (%s) — skipping",
+                    row.id, row.email,
+                )
+                followup_skipped += 1
+                continue
+
+        # Suppression guard
+        if row.email or row.person_linkedin:
+            if tracker.is_suppressed(row.email, row.person_linkedin):
+                logger.warning(
+                    "Suppressed: follow-up row %s (%s) — skipping",
+                    row.id, row.email,
+                )
+                followup_skipped += 1
+                continue
+
+        if dry_run:
+            logger.info(
+                "[DRY RUN] Would send follow-up row %s to %s at %s",
+                row.id, row.email, send_at.isoformat(),
+            )
+            followup_sent += 1
+            continue
+
+        try:
+            inbox = pool.pick_inbox(tracker_path)
+        except NoInboxAvailableError as e:
+            logger.warning("No inbox available for follow-ups: %s — halting", e)
+            break
+
+        if send_one_followup(row, inbox):
+            tracker.mark_follow_up_sent(row.id, inbox.address, tracker_path)
+            followup_sent += 1
+        else:
+            followup_skipped += 1
+
     prefix = "[DRY RUN] " if dry_run else ""
     logger.info(
-        "%sTick complete: %d sent, %d scheduled, %d skipped, %d queued remaining",
+        "%sTick complete: %d sent, %d scheduled, %d skipped, %d queued remaining"
+        " | follow-ups: %d sent, %d scheduled, %d skipped",
         prefix,
         sent_count,
         scheduled_count,
         skipped_count,
         len(queued_rows) - sent_count - skipped_count,
+        followup_sent,
+        followup_scheduled,
+        followup_skipped,
     )
 
 

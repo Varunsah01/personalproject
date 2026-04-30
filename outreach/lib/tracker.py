@@ -41,6 +41,7 @@ COLUMNS = [
     "replied",
     "notes",
     "last_updated",
+    "message_id",
 ]
 
 # Legal state transitions (outreach/CLAUDE.md §4).
@@ -48,13 +49,17 @@ COLUMNS = [
 # "closed" is reachable from any state (Varun manual), handled separately.
 LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "research_done": {"people_found", "closed"},
-    "people_found": {"contact_found", "closed"},
+    "people_found": {"contact_found", "linkedin_queue", "closed"},
     "contact_found": {"drafted", "closed"},
     "drafted": {"queued", "closed"},
     "queued": {"sent", "closed"},
-    "sent": {"replied", "closed"},
+    "sent": {"follow_up_drafted", "replied", "closed"},
     "replied": {"closed"},
     "closed": set(),
+    "follow_up_drafted": {"follow_up_queued", "closed"},
+    "follow_up_queued": {"follow_up_sent", "closed"},
+    "follow_up_sent": {"replied", "closed"},
+    "linkedin_queue": {"closed"},
 }
 
 _DEFAULT_PATH = Path("outreach/data/tracker.csv")
@@ -95,6 +100,7 @@ class Row:
     replied: str = ""
     notes: str = ""
     last_updated: str = ""
+    message_id: str = ""
 
 
 def _now_iso() -> str:
@@ -344,6 +350,37 @@ def mark_sent(
             return
 
 
+def mark_follow_up_sent(
+    row_id: str, inbox: str, path: Path | str = _DEFAULT_PATH
+) -> None:
+    """Transition a follow-up row to ``follow_up_sent`` and record metadata.
+
+    Calls ``update_status`` for state-machine validation, then sets
+    ``sent_at_utc`` and ``assigned_inbox``.
+
+    Args:
+        row_id: UUID of the row.
+        inbox: Gmail address that sent the follow-up.
+        path: Path to tracker.csv.
+
+    Raises:
+        StateMachineError: If the row isn't in ``follow_up_queued`` status.
+        KeyError: If row_id is not found.
+    """
+    path = Path(path)
+    update_status(row_id, "follow_up_sent", path)
+
+    raw_rows = _read_all_raw(path)
+    for i, existing in enumerate(raw_rows):
+        if existing.get("id") == row_id:
+            existing["sent_at_utc"] = _now_iso()
+            existing["assigned_inbox"] = inbox
+            existing["last_updated"] = _now_iso()
+            raw_rows[i] = existing
+            _write_all(raw_rows, path)
+            return
+
+
 def count_sent_today(path: Path | str = _DEFAULT_PATH) -> int:
     """Count messages sent today (UTC date boundary).
 
@@ -357,7 +394,7 @@ def count_sent_today(path: Path | str = _DEFAULT_PATH) -> int:
     today = _today_utc()
     count = 0
     for row in read_all(path):
-        if row.status == "sent" and row.sent_at_utc.startswith(today):
+        if row.status in ("sent", "follow_up_sent") and row.sent_at_utc.startswith(today):
             count += 1
     return count
 
@@ -372,14 +409,14 @@ def count_sent_today_by_inbox(
         path: Path to tracker.csv.
 
     Returns:
-        Number of rows with status ``sent``, matching inbox, and
-        ``sent_at_utc`` on today's UTC date.
+        Number of rows with status ``sent`` or ``follow_up_sent``, matching
+        inbox, and ``sent_at_utc`` on today's UTC date.
     """
     today = _today_utc()
     count = 0
     for row in read_all(path):
         if (
-            row.status == "sent"
+            row.status in ("sent", "follow_up_sent")
             and row.assigned_inbox == inbox
             and row.sent_at_utc.startswith(today)
         ):
@@ -621,6 +658,71 @@ def promote_to_queued(
             return row
 
     raise KeyError(f"Row not found after update: {row_id}")  # should never happen
+
+
+def promote_followup_to_queued(
+    row_id: str,
+    path: Path | str = _DEFAULT_PATH,
+) -> Row:
+    """Transition a follow_up_drafted row to follow_up_queued after guards.
+
+    This is the manual-approval gate for follow-ups. It validates:
+    1. Row exists and is in ``follow_up_drafted`` status.
+    2. The contact has not already replied (``replied != 'true'``).
+    3. The contact is not on the suppression list.
+
+    Args:
+        row_id: UUID of the row to promote.
+        path: Path to tracker.csv.
+
+    Returns:
+        The updated Row with status ``follow_up_queued``.
+
+    Raises:
+        KeyError: If row_id is not found.
+        StateMachineError: If the row is not in ``follow_up_drafted`` status,
+            has already been replied to, or is suppressed.
+    """
+    path = Path(path)
+    raw_rows = _read_all_raw(path)
+
+    target: dict[str, str] | None = None
+    for row in raw_rows:
+        if row.get("id") == row_id:
+            target = row
+            break
+
+    if target is None:
+        raise KeyError(f"Row not found: {row_id}")
+
+    current_status = target.get("status", "")
+    if current_status != "follow_up_drafted":
+        raise StateMachineError(
+            f"promote_followup_to_queued: row {row_id} is "
+            f"'{current_status}', expected 'follow_up_drafted'"
+        )
+
+    if target.get("replied") == "true":
+        raise StateMachineError(
+            f"promote_followup_to_queued: row {row_id} already has a reply"
+        )
+
+    row_email = target.get("email", "").strip()
+    row_linkedin = target.get("person_linkedin", "").strip()
+
+    if row_email or row_linkedin:
+        if is_suppressed(row_email, row_linkedin):
+            raise StateMachineError(
+                f"promote_followup_to_queued: row {row_id} is suppressed"
+            )
+
+    update_status(row_id, "follow_up_queued", path)
+
+    for row in read_all(path):
+        if row.id == row_id:
+            return row
+
+    raise KeyError(f"Row not found after update: {row_id}")
 
 
 def funnel_counts(path: Path | str = _DEFAULT_PATH) -> dict[str, int]:

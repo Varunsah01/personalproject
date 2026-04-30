@@ -49,7 +49,9 @@ def _build_service(inbox: InboxConfig):
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
-def _find_replies(service, sent_rows: list[tracker.Row]) -> list[tracker.Row]:
+def _find_replies(
+    service, sent_rows: list[tracker.Row]
+) -> list[tuple[tracker.Row, str]]:
     """Search Gmail for replies to the given sent rows.
 
     For each row, queries the inbox for threads matching the subject and
@@ -61,9 +63,10 @@ def _find_replies(service, sent_rows: list[tracker.Row]) -> list[tracker.Row]:
         sent_rows: Rows with status ``sent``, all from the same inbox.
 
     Returns:
-        Subset of rows that have received replies.
+        List of ``(row, snippet)`` tuples for rows that received replies.
+        ``snippet`` is Gmail's plain-text preview of the reply message.
     """
-    replied: list[tracker.Row] = []
+    replied: list[tuple[tracker.Row, str]] = []
 
     for row in sent_rows:
         if not row.email or not row.subject:
@@ -116,7 +119,8 @@ def _find_replies(service, sent_rows: list[tracker.Row]) -> list[tracker.Row]:
             }
             from_addr = headers.get("from", "").lower()
             if row.email.lower() in from_addr:
-                replied.append(row)
+                snippet = tmsg.get("snippet", "")
+                replied.append((row, snippet))
                 break
 
     return replied
@@ -141,10 +145,10 @@ def tick(
         logger.info("STOP file found at %s — exiting", stop_path)
         return
 
-    # Load sent rows that haven't been marked as replied
+    # Load sent rows (initial + follow-up) that haven't been marked as replied
     sent_rows = [
-        r for r in tracker.read_by_status("sent", tracker_path)
-        if r.replied != "true"
+        r for r in tracker.read_all(tracker_path)
+        if r.status in ("sent", "follow_up_sent") and r.replied != "true"
     ]
     if not sent_rows:
         logger.info("No unreplied sent rows — nothing to do")
@@ -185,7 +189,7 @@ def tick(
 
         replied_rows = _find_replies(service, rows)
 
-        for row in replied_rows:
+        for row, snippet in replied_rows:
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             existing_notes = row.notes or ""
             note_suffix = f"replied_at_utc={now_iso}"
@@ -204,6 +208,15 @@ def tick(
                 logger.info(
                     "Marked replied: %s (%s → %s)",
                     row.id, row.company, row.email,
+                )
+
+                # Push notification — replies are the most time-sensitive event
+                from outreach.lib.push import notify
+                notify(
+                    f"reply from {row.company}",
+                    snippet[:80] if snippet else f"{row.person_name} replied",
+                    priority="high",
+                    tags="incoming_envelope",
                 )
 
             replied_count += 1

@@ -16,7 +16,13 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from outreach.lib.gmail_pool import InboxConfig
-from outreach.lib.sender import _GLOBAL_DAILY_CAP, _is_generic_alias, send_one, tick
+from outreach.lib.sender import (
+    _GLOBAL_DAILY_CAP,
+    _is_generic_alias,
+    send_one,
+    send_one_followup,
+    tick,
+)
 from outreach.lib.tracker import Row
 
 
@@ -102,37 +108,37 @@ class TestIsGenericAlias:
 class TestSendOne:
     """send_one: pre-flight guards and happy-path success."""
 
-    def test_generic_alias_returns_false_no_api_call(self):
+    def test_generic_alias_returns_none_no_api_call(self):
         row = _make_row(email="info@company.com")
         inbox = _make_inbox()
 
         with patch("outreach.lib.sender._load_credentials") as mock_creds:
             result = send_one(row, inbox)
 
-        assert result is False
+        assert result is None
         mock_creds.assert_not_called()
 
-    def test_blank_email_returns_false(self):
+    def test_blank_email_returns_none(self):
         row = _make_row(email="   ")
         inbox = _make_inbox()
 
         with patch("outreach.lib.sender._load_credentials") as mock_creds:
             result = send_one(row, inbox)
 
-        assert result is False
+        assert result is None
         mock_creds.assert_not_called()
 
-    def test_missing_draft_returns_false(self, tmp_path):
+    def test_missing_draft_returns_none(self, tmp_path):
         row = _make_row(body_path=str(tmp_path / "missing.md"))
         inbox = _make_inbox()
 
         with patch("outreach.lib.sender._load_credentials") as mock_creds:
             result = send_one(row, inbox)
 
-        assert result is False
+        assert result is None
         mock_creds.assert_not_called()
 
-    def test_success_returns_true_and_archives(self, tmp_path):
+    def test_success_returns_message_id_and_archives(self, tmp_path):
         draft = tmp_path / "draft.md"
         draft.write_text("Hello, I'm reaching out about your seed raise.", encoding="utf-8")
         row = _make_row(body_path=str(draft))
@@ -145,13 +151,14 @@ class TestSendOne:
         ):
             result = send_one(row, inbox)
 
-        assert result is True
+        assert isinstance(result, str)
+        assert result.startswith("<") and result.endswith(">")
         mock_archive.assert_called_once_with(
             row.id, row.subject, inbox.address, row.email,
             "Hello, I'm reaching out about your seed raise.",
         )
 
-    def test_api_exception_returns_false(self, tmp_path):
+    def test_api_exception_returns_none(self, tmp_path):
         draft = tmp_path / "draft.md"
         draft.write_text("body", encoding="utf-8")
         row = _make_row(body_path=str(draft))
@@ -169,7 +176,7 @@ class TestSendOne:
         ):
             result = send_one(row, inbox)
 
-        assert result is False
+        assert result is None
         mock_archive.assert_not_called()
 
 
@@ -201,14 +208,14 @@ class TestSendOneErrorHandling:
 
         return result, mock_suppress
 
-    def test_hard_bounce_suppresses_and_returns_false(self, tmp_path):
+    def test_hard_bounce_suppresses_and_returns_none(self, tmp_path):
         row = _make_row(email="ghost@example.com")
         inbox = _make_inbox()
         exc = _http_error(400, b'{"error":{"message":"550 5.1.1 user not found"}}')
 
         result, mock_suppress = self._run(tmp_path, row, inbox, exc)
 
-        assert result is False
+        assert result is None
         mock_suppress.assert_called_once()
         call_kwargs = mock_suppress.call_args.kwargs
         assert call_kwargs["email"] == "ghost@example.com"
@@ -221,7 +228,7 @@ class TestSendOneErrorHandling:
 
         result, mock_suppress = self._run(tmp_path, row, inbox, exc)
 
-        assert result is False
+        assert result is None
         mock_suppress.assert_not_called()
 
     def test_auth_error_401_no_suppression(self, tmp_path):
@@ -231,7 +238,7 @@ class TestSendOneErrorHandling:
 
         result, mock_suppress = self._run(tmp_path, row, inbox, exc)
 
-        assert result is False
+        assert result is None
         mock_suppress.assert_not_called()
 
     def test_transient_429_no_suppression(self, tmp_path):
@@ -241,7 +248,7 @@ class TestSendOneErrorHandling:
 
         result, mock_suppress = self._run(tmp_path, row, inbox, exc)
 
-        assert result is False
+        assert result is None
         mock_suppress.assert_not_called()
 
     def test_transient_503_no_suppression(self, tmp_path):
@@ -251,7 +258,7 @@ class TestSendOneErrorHandling:
 
         result, mock_suppress = self._run(tmp_path, row, inbox, exc)
 
-        assert result is False
+        assert result is None
         mock_suppress.assert_not_called()
 
 
@@ -365,3 +372,119 @@ class TestTick:
 
         mock_send.assert_not_called()
         mock_mark.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestSendOneFollowup
+# ---------------------------------------------------------------------------
+
+class TestSendOneFollowup:
+    """send_one_followup: In-Reply-To threading and subject prefix."""
+
+    def test_success_sets_in_reply_to_and_returns_msg_id(self, tmp_path):
+        draft = tmp_path / "followup.md"
+        draft.write_text("Wanted to bring this back to the top of your inbox.", encoding="utf-8")
+        row = _make_row(
+            body_path=str(draft),
+            message_id="<original-123@gmail.com>",
+            status="follow_up_queued",
+        )
+        inbox = _make_inbox()
+
+        sent_raw = {}
+
+        def capture_send(userId, body):
+            sent_raw.update(body)
+            mock_result = MagicMock()
+            mock_result.execute.return_value = {"id": "msg-456"}
+            return mock_result
+
+        svc = MagicMock()
+        svc.users.return_value.messages.return_value.send.side_effect = capture_send
+
+        with (
+            patch("outreach.lib.sender._load_credentials", return_value=MagicMock()),
+            patch("googleapiclient.discovery.build", return_value=svc),
+            patch("outreach.lib.sender._archive_eml"),
+        ):
+            result = send_one_followup(row, inbox)
+
+        assert isinstance(result, str)
+        assert result.startswith("<") and result.endswith(">")
+
+        # Decode the sent message to verify headers
+        import base64
+        from email import message_from_bytes
+
+        raw_bytes = base64.urlsafe_b64decode(sent_raw["raw"])
+        msg = message_from_bytes(raw_bytes)
+        assert msg["In-Reply-To"] == "<original-123@gmail.com>"
+        assert msg["References"] == "<original-123@gmail.com>"
+        assert msg["Subject"] == "Re: Founding operator"
+
+    def test_no_in_reply_to_when_message_id_empty(self, tmp_path):
+        draft = tmp_path / "followup.md"
+        draft.write_text("Following up.", encoding="utf-8")
+        row = _make_row(
+            body_path=str(draft),
+            message_id="",
+            status="follow_up_queued",
+        )
+        inbox = _make_inbox()
+
+        sent_raw = {}
+
+        def capture_send(userId, body):
+            sent_raw.update(body)
+            mock_result = MagicMock()
+            mock_result.execute.return_value = {"id": "msg-789"}
+            return mock_result
+
+        svc = MagicMock()
+        svc.users.return_value.messages.return_value.send.side_effect = capture_send
+
+        with (
+            patch("outreach.lib.sender._load_credentials", return_value=MagicMock()),
+            patch("googleapiclient.discovery.build", return_value=svc),
+            patch("outreach.lib.sender._archive_eml"),
+        ):
+            result = send_one_followup(row, inbox)
+
+        assert isinstance(result, str)
+
+        import base64
+        from email import message_from_bytes
+
+        raw_bytes = base64.urlsafe_b64decode(sent_raw["raw"])
+        msg = message_from_bytes(raw_bytes)
+        assert msg["In-Reply-To"] is None
+        assert msg["References"] is None
+
+    def test_generic_alias_returns_none(self):
+        row = _make_row(email="info@company.com", status="follow_up_queued")
+        inbox = _make_inbox()
+
+        result = send_one_followup(row, inbox)
+
+        assert result is None
+
+    def test_archives_with_followup_suffix(self, tmp_path):
+        draft = tmp_path / "followup.md"
+        draft.write_text("bump", encoding="utf-8")
+        row = _make_row(
+            body_path=str(draft),
+            message_id="<orig@gmail.com>",
+            status="follow_up_queued",
+        )
+        inbox = _make_inbox()
+
+        with (
+            patch("outreach.lib.sender._load_credentials", return_value=MagicMock()),
+            patch("googleapiclient.discovery.build", return_value=_mock_service()),
+            patch("outreach.lib.sender._archive_eml") as mock_archive,
+        ):
+            send_one_followup(row, inbox)
+
+        mock_archive.assert_called_once()
+        call_args = mock_archive.call_args
+        assert call_args[0][0] == "uuid-0001_followup"

@@ -108,6 +108,31 @@ Present a structured summary:
 **Apollo lookups pending Varun approval:** {N}
 - {person_name} at {company} — approve to spend 1 Apollo credit
 
+### Push notification (if configured)
+
+After presenting the summary above, check if push notifications are available and
+there are enough manager-approved drafts to warrant an alert:
+
+```bash
+python3 -c "
+import os
+from dotenv import load_dotenv
+load_dotenv('.env.outreach')
+n = {N}  # number of drafts ready for review from Stage 5
+if n >= 3 and os.environ.get('NTFY_TOPIC'):
+    from outreach.lib.push import notify
+    notify(
+        'drafts ready',
+        f'{n} drafts ready for review \u00B7 localhost:3000/drafts',
+        priority='high',
+        tags='memo',
+    )
+"
+```
+
+Replace `{N}` with the actual count of manager-approved drafts from Stage 5.
+If `NTFY_TOPIC` is not set, `notify()` noops silently. This is not an error.
+
 ---
 
 ## Stage 7 — Await Varun's approval

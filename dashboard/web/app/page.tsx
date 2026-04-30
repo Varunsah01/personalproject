@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import TopNav from "@/components/TopNav";
 import TierBadge from "@/components/TierBadge";
 import Chip from "@/components/Chip";
+import AgentChat from "@/components/AgentChat";
 import { usePolling } from "@/hooks/usePolling";
 import type { PipelineResponse, OutreachRow } from "@/lib/types";
 import { PIPELINE_STATUSES, STATUS_LABELS } from "@/lib/types";
@@ -54,6 +55,20 @@ function Drawer({
   row: OutreachRow;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<"details" | "chat">("details");
+
+  // Reset to details when a different card is opened
+  useEffect(() => {
+    setTab("details");
+  }, [row.id]);
+
+  const tabClass = (t: "details" | "chat") =>
+    `font-mono text-xs px-3 py-2 cursor-pointer border-b-2 transition-colors ${
+      tab === t
+        ? "text-ink border-ink"
+        : "text-ink-3 border-transparent hover:text-ink-2"
+    }`;
+
   return (
     <>
       <div
@@ -61,6 +76,7 @@ function Drawer({
         onClick={onClose}
       />
       <div className="absolute top-0 right-0 bottom-0 w-[380px] bg-bg-1 border-l border-line z-20 flex flex-col">
+        {/* header */}
         <div className="p-3.5 px-4 border-b border-line flex items-center">
           <div className="flex-1 min-w-0">
             <div className="font-mono text-xs text-ink-3 truncate">{row.id}</div>
@@ -76,78 +92,94 @@ function Drawer({
             esc
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4">
-          <Row label="person" value={row.person_name} />
-          <Row label="title" value={row.person_title} />
-          <Row label="tier" value={<TierBadge tier={row.role_tier} />} />
-          <Row label="status" value={<span className="font-mono">{row.status}</span>} />
-          <Row label="email" value={row.email || <span className="text-ink-4">none</span>} />
-          <Row label="confidence" value={row.email_confidence} />
-          <Row label="last action" value={<span className="font-mono">{timeSince(row.last_updated)}</span>} />
-          <Row
-            label="stale"
-            value={
-              row.stale ? (
-                <span className="text-warn">
-                  yes — {row.days_in_column}d in column
-                </span>
-              ) : (
-                <span className="text-ink-3">no</span>
-              )
-            }
-          />
 
-          <div className="mt-4 uppercase text-[11px] tracking-wider text-ink-3">
-            timeline
-          </div>
-          <div className="flex flex-col gap-1.5 mt-2">
-            {PIPELINE_STATUSES.map((s) => {
-              const idx = PIPELINE_STATUSES.indexOf(row.status as typeof s);
-              const si = PIPELINE_STATUSES.indexOf(s);
-              const klass =
-                si < idx ? "done" : si === idx ? "current" : "todo";
-              return (
-                <div
-                  key={s}
-                  className={`flex gap-2 items-center font-mono text-[11px] px-2 py-1 rounded-[3px] border ${
-                    klass === "done"
-                      ? "text-ink-2 border-line"
-                      : klass === "current"
-                        ? "text-ink border-ink-4 bg-bg-2"
-                        : "text-ink-4 border-dashed border-line"
-                  }`}
-                >
-                  <span className="w-3.5 text-ink-4">
-                    {klass === "done" ? "✓" : klass === "current" ? "▸" : "·"}
-                  </span>
-                  <span>{STATUS_LABELS[s]}</span>
-                </div>
-              );
-            })}
-          </div>
-
-          {row.hook && (
-            <>
-              <div className="mt-4 uppercase text-[11px] tracking-wider text-ink-3">
-                hook
-              </div>
-              <div className="mt-1.5 italic border-l-2 border-ink-4 pl-2.5 py-1 text-ink-2 text-[13px]">
-                &ldquo;{row.hook}&rdquo;
-              </div>
-            </>
-          )}
-
-          {row.notes && (
-            <>
-              <div className="mt-4 uppercase text-[11px] tracking-wider text-ink-3">
-                notes
-              </div>
-              <div className="mt-1.5 font-mono text-[11px] text-ink-3 whitespace-pre-wrap">
-                {row.notes}
-              </div>
-            </>
-          )}
+        {/* tab bar */}
+        <div className="flex border-b border-line shrink-0">
+          <button className={tabClass("details")} onClick={() => setTab("details")}>
+            details
+          </button>
+          <button className={tabClass("chat")} onClick={() => setTab("chat")}>
+            chat
+          </button>
         </div>
+
+        {/* tab content */}
+        {tab === "details" ? (
+          <div className="flex-1 overflow-y-auto p-4">
+            <Row label="person" value={row.person_name} />
+            <Row label="title" value={row.person_title} />
+            <Row label="tier" value={<TierBadge tier={row.role_tier} />} />
+            <Row label="status" value={<span className="font-mono">{row.status}</span>} />
+            <Row label="email" value={row.email || <span className="text-ink-4">none</span>} />
+            <Row label="confidence" value={row.email_confidence} />
+            <Row label="last action" value={<span className="font-mono">{timeSince(row.last_updated)}</span>} />
+            <Row
+              label="stale"
+              value={
+                row.stale ? (
+                  <span className="text-warn">
+                    yes — {row.days_in_column}d in column
+                  </span>
+                ) : (
+                  <span className="text-ink-3">no</span>
+                )
+              }
+            />
+
+            <div className="mt-4 uppercase text-[11px] tracking-wider text-ink-3">
+              timeline
+            </div>
+            <div className="flex flex-col gap-1.5 mt-2">
+              {PIPELINE_STATUSES.map((s) => {
+                const idx = PIPELINE_STATUSES.indexOf(row.status as typeof s);
+                const si = PIPELINE_STATUSES.indexOf(s);
+                const klass =
+                  si < idx ? "done" : si === idx ? "current" : "todo";
+                return (
+                  <div
+                    key={s}
+                    className={`flex gap-2 items-center font-mono text-[11px] px-2 py-1 rounded-[3px] border ${
+                      klass === "done"
+                        ? "text-ink-2 border-line"
+                        : klass === "current"
+                          ? "text-ink border-ink-4 bg-bg-2"
+                          : "text-ink-4 border-dashed border-line"
+                    }`}
+                  >
+                    <span className="w-3.5 text-ink-4">
+                      {klass === "done" ? "\u2713" : klass === "current" ? "\u25B8" : "\u00B7"}
+                    </span>
+                    <span>{STATUS_LABELS[s]}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {row.hook && (
+              <>
+                <div className="mt-4 uppercase text-[11px] tracking-wider text-ink-3">
+                  hook
+                </div>
+                <div className="mt-1.5 italic border-l-2 border-ink-4 pl-2.5 py-1 text-ink-2 text-[13px]">
+                  &ldquo;{row.hook}&rdquo;
+                </div>
+              </>
+            )}
+
+            {row.notes && (
+              <>
+                <div className="mt-4 uppercase text-[11px] tracking-wider text-ink-3">
+                  notes
+                </div>
+                <div className="mt-1.5 font-mono text-[11px] text-ink-3 whitespace-pre-wrap">
+                  {row.notes}
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <AgentChat row={row} />
+        )}
       </div>
     </>
   );

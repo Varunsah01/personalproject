@@ -34,6 +34,9 @@ _STATUS_ORDER = [
     "drafted",
     "queued",
     "sent",
+    "follow_up_drafted",
+    "follow_up_queued",
+    "follow_up_sent",
     "replied",
     "closed",
 ]
@@ -240,6 +243,52 @@ def print_needs_review(tracker_path: Path = _DEFAULT_TRACKER_PATH) -> None:
 
 
 # ---------------------------------------------------------------------------
+# --needs-follow-up
+# ---------------------------------------------------------------------------
+
+def print_needs_follow_up(tracker_path: Path = _DEFAULT_TRACKER_PATH) -> None:
+    """List rows eligible for follow-up drafts.
+
+    Criteria: status=sent, replied != 'true', sent_at_utc 7–14 days ago.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff_7d = now - timedelta(days=7)
+    cutoff_14d = now - timedelta(days=14)
+
+    candidates = []
+    for row in tracker.read_by_status("sent", tracker_path):
+        if row.replied == "true":
+            continue
+        if not row.sent_at_utc:
+            continue
+        try:
+            sent_at = datetime.fromisoformat(row.sent_at_utc)
+        except ValueError:
+            continue
+        if cutoff_14d <= sent_at <= cutoff_7d:
+            candidates.append((row, (now - sent_at).days))
+
+    candidates.sort(key=lambda pair: pair[0].sent_at_utc)
+
+    print()
+    print(f"ROWS READY FOR FOLLOW-UP ({len(candidates)})")
+    print("\u2500" * 78)
+
+    if not candidates:
+        print("  None.")
+        print()
+        return
+
+    for row, days_ago in candidates:
+        short_id = row.id[:8] if row.id else "?"
+        company = (row.company or "")[:25]
+        person = row.person_name or ""
+        print(f"  {short_id}  {company:<25} {person:<20} sent {days_ago}d ago")
+
+    print()
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -255,6 +304,10 @@ def main() -> None:
     parser.add_argument(
         "--needs-review", action="store_true",
         help="List all drafted rows awaiting review"
+    )
+    parser.add_argument(
+        "--needs-follow-up", action="store_true",
+        help="List rows eligible for follow-up (sent 7-14 days ago, no reply)"
     )
     parser.add_argument(
         "--tracker-path", type=Path, default=_DEFAULT_TRACKER_PATH,
@@ -275,6 +328,8 @@ def main() -> None:
         print_by_tier(args.tracker_path)
     elif args.needs_review:
         print_needs_review(args.tracker_path)
+    elif args.needs_follow_up:
+        print_needs_follow_up(args.tracker_path)
     else:
         print_dashboard(args.tracker_path, args.env_path, args.stop_path)
 

@@ -381,11 +381,32 @@ BOTDIR=/Users/varunsah/Code/Job Automation
 # Reply watcher: every 30 min between 09:00-22:00 IST (same window as sender)
 */30 9-22 * * *       cd "$BOTDIR" && python3 -m outreach.lib.reply_watcher --tick >> data/logs/reply_watcher.log 2>&1
 
+# Stale row cleanup: nightly 03:00 IST (21:30 UTC previous day)
+30 21 * * *           cd "$BOTDIR" && python3 -m outreach.lib.cleanup --close-stale >> data/logs/cleanup.log 2>&1
+
 # Outreach digest: daily 8 PM IST (14:30 UTC)
 30 14 * * *           cd "$BOTDIR" && python3 -m outreach.lib.digest --send >> data/logs/outreach-digest.log 2>&1
 ```
 
 > **Note:** if your machine uses UTC, convert IST times: 07:00 IST = 01:30 UTC, 09:00 IST = 03:30 UTC, 22:00 IST = 16:30 UTC.
+
+### Mobile notifications
+
+The pipeline can push real-time alerts to your phone via [ntfy.sh](https://ntfy.sh) (free, no account needed).
+
+**Setup:**
+1. Install the ntfy app ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/app/ntfy/id1625396347))
+2. Subscribe to a random, unguessable topic string (e.g. `varun-outreach-a8f3k2`)
+3. Set `NTFY_TOPIC=varun-outreach-a8f3k2` in `.env.outreach`
+
+**What triggers a push:**
+
+| Event | Trigger | Priority |
+|---|---|---|
+| Drafts ready | >= 3 manager-approved drafts after a pipeline run | high |
+| Reply received | Any reply detected by the reply watcher | high |
+
+If `NTFY_TOPIC` is not set, notifications are silently skipped — nothing breaks.
 
 ### Setup
 

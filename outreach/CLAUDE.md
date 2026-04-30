@@ -19,17 +19,19 @@ If two sources disagree, the higher-numbered source loses. Surface the conflict 
 
 ## 1. PIPELINE OVERVIEW
 
-Five stages, executed in order. Each stage advances rows in `tracker.csv` through the status state machine.
+Six stages, executed in order. Each stage advances rows in `tracker.csv` through the status state machine.
 
 | Stage | Agent | Input status | Output status | What it does |
 |---|---|---|---|---|
 | 1. Role Researcher | `.claude/agents/role_researcher.md` | *(new row)* | `research_done` | Finds relevant openings from job boards and public sources; writes company, role_url, role_title, role_tier |
 | 2. People Finder | `.claude/agents/people_finder.md` | `research_done` | `people_found` | Identifies hiring-team contacts (hiring manager, founder, team lead) from public sources; writes person_name, person_title, person_linkedin, person_country, relationship_type |
-| 3. Channel Finder | `.claude/agents/channel_finder.md` | `people_found` | `contact_found` | Discovers email addresses from public sources (company pages, free Hunter.io tier); writes email, email_confidence, linkedin_only |
+| 3. Channel Finder | `.claude/agents/channel_finder.md` | `people_found` | `contact_found` or `linkedin_queue` | Discovers email addresses from public sources, Apollo.io, Hunter.io; writes email, email_confidence, linkedin_only. Routes to `contact_found` (email found) or `linkedin_queue` (no email) |
+| 3b. LinkedIn Writer | `.claude/agents/linkedin_writer.md` | `linkedin_queue` | `linkedin_queue` (body_path populated) | Drafts 2-sentence LinkedIn DM for contacts with no email; writes to `outreach/data/drafts/{id}_linkedin.md` |
 | 4. Message Writer | `.claude/agents/message_writer.md` | `contact_found` | `drafted` | Crafts personalised message following `outreach/prompts/principles.md`; writes hook, subject, body_path (draft file at `outreach/data/drafts/{id}.md`) |
 | 5. Sender | `outreach/lib/sender.py` | `queued` | `sent` | Sends via Gmail API through rotated inboxes within timing windows; writes assigned_inbox, send_at_utc, sent_at_utc |
+| 6. Follow-Up Writer | `.claude/agents/follow_up_writer.md` | `sent` (7-14d, no reply) | `follow_up_drafted` | Drafts 2-sentence follow-up bumps; writes to `outreach/data/drafts/{id}_followup.md` |
 
-**Critical gap between stages 4 and 5:** the transition from `drafted` to `queued` is **manual**. Varun reviews each draft and changes the status himself. No code, agent, or automation may bridge this gap.
+**Critical gaps:** the transitions `drafted` → `queued` and `follow_up_drafted` → `follow_up_queued` are both **manual**. Varun reviews each draft and changes the status himself. No code, agent, or automation may bridge these gaps. The `linkedin_queue` → `closed` transition is also manual — Varun sends the DM via LinkedIn and marks the row as messaged through the dashboard.
 
 ---
 
@@ -62,6 +64,7 @@ Single source of truth: `outreach/data/tracker.csv`
 | `replied` | manual | Varun marks |
 | `notes` | any | freeform |
 | `last_updated` | system | ISO timestamp, for audit + dedupe |
+| `message_id` | Agent 5 | RFC 5322 Message-ID of the sent email (for In-Reply-To threading) |
 
 ---
 
@@ -90,9 +93,17 @@ outreach/
 
 ## 4. STATUS STATE MACHINE
 
-### States
+### States (primary flow — email)
 
 `research_done` → `people_found` → `contact_found` → `drafted` → `queued` → `sent` → `replied` → `closed`
+
+### States (LinkedIn branch)
+
+`people_found` → `linkedin_queue` → `closed`
+
+### States (follow-up branch)
+
+`sent` → `follow_up_drafted` → `follow_up_queued` → `follow_up_sent` → `replied` → `closed`
 
 ### Legal transitions
 
@@ -100,23 +111,31 @@ outreach/
 |---|---|---|---|
 | *(new)* | `research_done` | Agent 1 (role_researcher) | Row created with company, role_url, role_title, role_tier |
 | `research_done` | `people_found` | Agent 2 (people_finder) | person_* fields populated |
-| `people_found` | `contact_found` | Agent 3 (channel_finder) | email or linkedin_only populated |
+| `people_found` | `contact_found` | Agent 3 (channel_finder) | When email found (high/medium confidence) |
+| `people_found` | `linkedin_queue` | Agent 3 (channel_finder) | When `linkedin_only=true` — no email found |
+| `linkedin_queue` | `closed` | **Varun (manual)** | After sending LinkedIn DM via dashboard |
 | `contact_found` | `drafted` | Agent 4 (message_writer) | hook, subject, body_path populated; draft file written |
 | `drafted` | `queued` | **Varun (manual only)** | Human review gate. No automation may perform this transition. |
 | `queued` | `sent` | Agent 5 (sender) | Only within send windows; only if under daily cap |
-| `sent` | `replied` | **Varun (manual)** | Varun marks when a reply is received |
+| `sent` | `follow_up_drafted` | Agent 6 (follow_up_writer) | After 7-14 days with no reply; follow-up draft written |
+| `sent` | `replied` | reply_watcher / **Varun** | Reply detected or manually marked |
+| `follow_up_drafted` | `follow_up_queued` | **Varun (manual only)** | Human review gate — same as `drafted` → `queued`. |
+| `follow_up_queued` | `follow_up_sent` | Agent 5 (sender) | Same send logic; includes In-Reply-To header for threading |
+| `follow_up_sent` | `replied` | reply_watcher / **Varun** | Reply detected after follow-up |
 | `replied` | `closed` | **Varun (manual)** | Conversation concluded |
 | *any* | `closed` | **Varun (manual)** | Can close at any point (e.g., role filled, not interested) |
 
 **Illegal transitions:** any transition not listed above. In particular:
 - `drafted` → `sent` is **never** legal. Must pass through `queued` via manual approval.
+- `follow_up_drafted` → `follow_up_sent` is **never** legal. Must pass through `follow_up_queued` via manual approval.
 - No backward transitions (e.g., `sent` → `drafted`). If a re-send is needed, create a new row.
+- No second follow-up: `follow_up_sent` cannot transition to `follow_up_drafted`.
 
 ---
 
 ## 5. SUBAGENT CONTRACT
 
-Every subagent (Agents 1–4) operating within this module must:
+Every subagent (Agents 1–4, 6) operating within this module must:
 
 1. **Read first.** Before doing any work, read `outreach/prompts/principles.md` and `GUARDRAILS.md` section 1.7. Non-negotiable.
 2. **Never invent data.** If a field cannot be verified from a public source, leave it blank. Never guess email addresses, titles, company details, or relationship types.

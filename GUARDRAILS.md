@@ -69,7 +69,7 @@ These actions are forbidden. Even if the user asks. Even if "just this once." Ev
 - **Never** auto-send. Drafts always require Varun moving status from `drafted` to `queued` manually before the sender runs.
 - **Never** exceed 25 outbound messages/day total across all inboxes combined.
 - **Never** exceed 25 outbound messages/day per single inbox.
-- **Never** use scraped credential dumps, gated databases (Apollo, Lusha, ZoomInfo, RocketReach) via fake accounts, or leaked email lists. Public sources only. Free Hunter.io tier (50/mo) is allowed.
+- **Never** use scraped credential dumps, leaked email lists, or gated databases via fake accounts. Apollo.io free tier (50 credits/month, personal account) and Hunter.io free tier (50 verifications/month) are allowed. Lusha, ZoomInfo, and RocketReach remain banned regardless of subscription status — their data sources are non-consensual scrapes.
 - **Never** send to generic aliases (`info@`, `hello@`, `careers@`, `support@`, `contact@`) — person-specific addresses only.
 - **Never** include unsubscribe-bait, fake reply-to, or any header spoofing.
 - **Never** re-send to the same person within 14 days, regardless of which inbox is used.
@@ -230,8 +230,9 @@ If any of these come up during a task, stop and check with Varun:
 - Never update this file as a side effect of another task.
 - Every update should bump the version line below and add a note in the changelog.
 
-**Version:** 1.1
-**Last updated:** 2026-04-29
+**Version:** 1.2
+**Last updated:** 2026-04-30
 **Changelog:**
+- 1.2 (2026-04-30): §1.7 — allowed Apollo.io free tier alongside Hunter.io free tier; explicitly banned Lusha/ZoomInfo/RocketReach regardless of subscription.
 - 1.1 (2026-04-29): Added §1.7 outreach rules; extended §2 approval table for outreach actions.
 - 1.0 (2026-04-28): Initial version.

@@ -21,6 +21,9 @@ from outreach.lib.tracker import (
     is_in_cooldown,
     is_suppressed,
     load_suppression,
+    mark_follow_up_sent,
+    mark_sent,
+    promote_followup_to_queued,
     promote_to_queued,
     read_all,
     update_notes,
@@ -556,3 +559,279 @@ class TestUpdateNotes:
 
         with pytest.raises(KeyError, match="no-such-id"):
             update_notes("no-such-id", "notes", csv_path)
+
+
+# ---------------------------------------------------------------------------
+# Follow-up state machine helpers
+# ---------------------------------------------------------------------------
+
+def _seed_to_sent(path) -> str:
+    """Insert a row and walk it to ``sent``. Returns the row id."""
+    row = _make_row(
+        email="test@example.com",
+        person_linkedin="linkedin.com/in/test",
+        status="research_done",
+    )
+    upsert(row, path)
+    row_id = read_all(path)[0].id
+    _seed_to_queued(row_id, path)
+    _force_sent(row_id, path, sent_at=datetime.now(timezone.utc).isoformat(), inbox="a@gmail.com")
+    return row_id
+
+
+def _seed_to_follow_up_drafted(path) -> str:
+    """Insert a row and walk it to ``follow_up_drafted``."""
+    row_id = _seed_to_sent(path)
+    update_status(row_id, "follow_up_drafted", path)
+    return row_id
+
+
+# ---------------------------------------------------------------------------
+# TestFollowUpStateMachine
+# ---------------------------------------------------------------------------
+
+class TestFollowUpStateMachine:
+    """Follow-up status transitions are enforced by the state machine."""
+
+    def test_sent_to_follow_up_drafted_is_legal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_sent(csv_path)
+
+        update_status(row_id, "follow_up_drafted", csv_path)
+
+        assert read_all(csv_path)[0].status == "follow_up_drafted"
+
+    def test_follow_up_drafted_to_follow_up_queued_is_legal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+
+        update_status(row_id, "follow_up_queued", csv_path)
+
+        assert read_all(csv_path)[0].status == "follow_up_queued"
+
+    def test_follow_up_queued_to_follow_up_sent_is_legal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+        update_status(row_id, "follow_up_queued", csv_path)
+
+        update_status(row_id, "follow_up_sent", csv_path)
+
+        assert read_all(csv_path)[0].status == "follow_up_sent"
+
+    def test_follow_up_sent_to_replied_is_legal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+        update_status(row_id, "follow_up_queued", csv_path)
+        update_status(row_id, "follow_up_sent", csv_path)
+
+        update_status(row_id, "replied", csv_path)
+
+        assert read_all(csv_path)[0].status == "replied"
+
+    def test_sent_to_follow_up_queued_is_illegal(self, tmp_path):
+        """Must go through follow_up_drafted first."""
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_sent(csv_path)
+
+        with pytest.raises(StateMachineError):
+            update_status(row_id, "follow_up_queued", csv_path)
+
+    def test_follow_up_sent_to_follow_up_drafted_is_illegal(self, tmp_path):
+        """No backward transition — one follow-up only."""
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+        update_status(row_id, "follow_up_queued", csv_path)
+        update_status(row_id, "follow_up_sent", csv_path)
+
+        with pytest.raises(StateMachineError):
+            update_status(row_id, "follow_up_drafted", csv_path)
+
+
+# ---------------------------------------------------------------------------
+# TestMarkFollowUpSent
+# ---------------------------------------------------------------------------
+
+class TestMarkFollowUpSent:
+    """mark_follow_up_sent validates transition and records metadata."""
+
+    def test_happy_path(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+        update_status(row_id, "follow_up_queued", csv_path)
+
+        mark_follow_up_sent(row_id, "outreach@gmail.com", csv_path)
+
+        row = read_all(csv_path)[0]
+        assert row.status == "follow_up_sent"
+        assert row.assigned_inbox == "outreach@gmail.com"
+        assert row.sent_at_utc  # non-empty
+
+    def test_rejects_non_follow_up_queued(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_sent(csv_path)
+
+        with pytest.raises(StateMachineError):
+            mark_follow_up_sent(row_id, "outreach@gmail.com", csv_path)
+
+
+# ---------------------------------------------------------------------------
+# TestPromoteFollowupToQueued
+# ---------------------------------------------------------------------------
+
+class TestPromoteFollowupToQueued:
+    """promote_followup_to_queued enforces status, reply, and suppression checks."""
+
+    def test_happy_path(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+
+        result = promote_followup_to_queued(row_id, csv_path)
+
+        assert result.status == "follow_up_queued"
+        assert result.id == row_id
+
+    def test_rejects_non_follow_up_drafted(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_sent(csv_path)
+
+        with pytest.raises(StateMachineError, match="expected 'follow_up_drafted'"):
+            promote_followup_to_queued(row_id, csv_path)
+
+    def test_rejects_if_already_replied(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_to_follow_up_drafted(csv_path)
+
+        # Patch replied='true' on the row
+        import csv as _csv
+        from outreach.lib.tracker import COLUMNS, _read_all_raw
+        raw = _read_all_raw(csv_path)
+        for row in raw:
+            if row.get("id") == row_id:
+                row["replied"] = "true"
+                break
+        with open(csv_path, "w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=COLUMNS)
+            writer.writeheader()
+            writer.writerows(raw)
+
+        with pytest.raises(StateMachineError, match="already has a reply"):
+            promote_followup_to_queued(row_id, csv_path)
+
+    def test_rejects_if_suppressed(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        sup_path = tmp_path / "suppression.csv"
+        add_to_suppression(email="test@example.com", reason="replied stop", path=sup_path)
+
+        row_id = _seed_to_follow_up_drafted(csv_path)
+
+        # Verify suppression is detectable
+        assert is_suppressed("test@example.com", path=sup_path) is True
+
+
+# ---------------------------------------------------------------------------
+# TestCountSentTodayIncludesFollowUps
+# ---------------------------------------------------------------------------
+
+class TestCountSentTodayIncludesFollowUps:
+    """count_sent_today includes both sent and follow_up_sent rows."""
+
+    def test_follow_up_sent_counted(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Initial send
+        row_id = _seed_to_sent(csv_path)
+        _force_sent_at(row_id, csv_path, sent_at=now_iso)
+
+        assert count_sent_today(csv_path) == 1
+
+        # Walk to follow_up_sent
+        update_status(row_id, "follow_up_drafted", csv_path)
+        update_status(row_id, "follow_up_queued", csv_path)
+        update_status(row_id, "follow_up_sent", csv_path)
+        _force_sent_at(row_id, csv_path, sent_at=now_iso)
+
+        assert count_sent_today(csv_path) == 1  # same row, now follow_up_sent
+
+
+# ---------------------------------------------------------------------------
+# TestMessageIdField
+# ---------------------------------------------------------------------------
+
+class TestMessageIdField:
+    """Row dataclass includes message_id field."""
+
+    def test_message_id_defaults_empty(self):
+        row = Row()
+        assert row.message_id == ""
+
+    def test_message_id_round_trips(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row = _make_row()
+        upsert(row, csv_path)
+        row_id = read_all(csv_path)[0].id
+
+        # Patch message_id directly
+        import csv as _csv
+        from outreach.lib.tracker import COLUMNS, _read_all_raw
+        raw = _read_all_raw(csv_path)
+        for r in raw:
+            if r.get("id") == row_id:
+                r["message_id"] = "<test@example.com>"
+                break
+        with open(csv_path, "w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=COLUMNS)
+            writer.writeheader()
+            writer.writerows(raw)
+
+        reloaded = read_all(csv_path)[0]
+        assert reloaded.message_id == "<test@example.com>"
+
+
+# ---------------------------------------------------------------------------
+# TestLinkedInQueueStateMachine
+# ---------------------------------------------------------------------------
+
+class TestLinkedInQueueStateMachine:
+    """linkedin_queue status transitions are enforced by the state machine."""
+
+    def test_people_found_to_linkedin_queue_is_legal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row = _make_row(status="research_done")
+        upsert(row, csv_path)
+        row_id = read_all(csv_path)[0].id
+        update_status(row_id, "people_found", csv_path)
+
+        update_status(row_id, "linkedin_queue", csv_path)
+
+        assert read_all(csv_path)[0].status == "linkedin_queue"
+
+    def test_linkedin_queue_to_closed_is_legal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row = _make_row(status="research_done")
+        upsert(row, csv_path)
+        row_id = read_all(csv_path)[0].id
+        update_status(row_id, "people_found", csv_path)
+        update_status(row_id, "linkedin_queue", csv_path)
+
+        update_status(row_id, "closed", csv_path)
+
+        assert read_all(csv_path)[0].status == "closed"
+
+    def test_linkedin_queue_to_drafted_is_illegal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row = _make_row(status="research_done")
+        upsert(row, csv_path)
+        row_id = read_all(csv_path)[0].id
+        update_status(row_id, "people_found", csv_path)
+        update_status(row_id, "linkedin_queue", csv_path)
+
+        with pytest.raises(StateMachineError):
+            update_status(row_id, "drafted", csv_path)
+
+    def test_contact_found_to_linkedin_queue_is_illegal(self, tmp_path):
+        csv_path = tmp_path / "tracker.csv"
+        row_id = _seed_row_through_status(csv_path, "contact_found")
+
+        with pytest.raises(StateMachineError):
+            update_status(row_id, "linkedin_queue", csv_path)

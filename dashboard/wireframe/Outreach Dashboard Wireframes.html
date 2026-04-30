@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Outreach Dashboard — Wireframes</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* Page-level background for the canvas */
+    body { background: #0a0b0d; }
+    /* Artboard inner shell for desktop pages */
+    .desktop-shell {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      border-radius: 6px;
+    }
+    /* Phone shell: a thin device-ish frame so they feel like phone screens */
+    .phone-shell {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      border-radius: 32px;
+      border: 1px solid var(--line);
+    }
+    .phone-shell .status-bar {
+      height: 32px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 18px;
+      font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+    }
+    .phone-shell .home-bar {
+      height: 18px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg);
+    }
+    .phone-shell .home-bar::after {
+      content: ""; width: 110px; height: 4px; border-radius: 2px;
+      background: var(--ink-3);
+    }
+    .phone-shell .scroll-region {
+      flex: 1; min-height: 0; display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    /* Section subtitle in canvas */
+    .legend {
+      font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+      padding: 6px 8px; border: 1px dashed var(--line-2); border-radius: 4px;
+      background: var(--bg-1); display: inline-block;
+    }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="data.jsx"></script>
+  <script type="text/babel" src="pipeline.jsx"></script>
+  <script type="text/babel" src="drafts.jsx"></script>
+  <script type="text/babel" src="activity.jsx"></script>
+  <script type="text/babel" src="summary.jsx"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const Phone = ({ children }) => (
+      <div className="phone-shell">
+        <div className="status-bar">
+          <span>9:41</span>
+          <span style={{ display: "flex", gap: 8 }}>
+            <span>5G</span>
+            <span>87%</span>
+          </span>
+        </div>
+        <div className="scroll-region">{children}</div>
+        <div className="home-bar"></div>
+      </div>
+    );
+
+    function App() {
+      return (
+        <DesignCanvas
+          title="Outreach Dashboard — Wireframes"
+          subtitle="Summary · Pipeline · Drafts · Agent activity. 3 directions per page. Click any artboard to focus."
+        >
+          <DCSection
+            id="summary"
+            title="Summary dashboard"
+            subtitle="Overview of all work + per-agent task counts. Pulls from agent_logs + the SQLite tracker mirror."
+          >
+            <DCArtboard id="sa" label="A · Overview-first" width={1280} height={820}>
+              <div className="desktop-shell"><SummaryA /></div>
+            </DCArtboard>
+            <DCArtboard id="sb" label="B · Agent cards" width={1280} height={820}>
+              <div className="desktop-shell"><SummaryB /></div>
+            </DCArtboard>
+            <DCArtboard id="sc" label="C · Ops report (compact)" width={1280} height={820}>
+              <div className="desktop-shell"><SummaryC /></div>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="pipeline"
+            title="Pipeline"
+            subtitle="Status-only kanban over the SQLite mirror. Stress-test data (200+ rows). Search · tier filter · click card → drawer · stale ≥ 5d marker."
+          >
+            <DCArtboard id="pa" label="A · Kanban + drawer" width={1280} height={760}>
+              <div className="desktop-shell"><PipelineA /></div>
+            </DCArtboard>
+            <DCArtboard id="pb" label="B · Compact / dense" width={1280} height={760}>
+              <div className="desktop-shell"><PipelineB /></div>
+            </DCArtboard>
+            <DCArtboard id="pc" label="C · Funnel summary" width={1280} height={760}>
+              <div className="desktop-shell"><PipelineC /></div>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="drafts"
+            title="Drafts (mobile)"
+            subtitle="Thumb-reachable approve/reject. Three densities of the card. Tap APPROVE → status=queued, REJECT → reason chips + note."
+          >
+            <DCArtboard id="da" label="A · Full body, sticky CTAs" width={390} height={780}>
+              <Phone><DraftsA /></Phone>
+            </DCArtboard>
+            <DCArtboard id="db" label="B · Stack · expandable preview" width={390} height={780}>
+              <Phone><DraftsB /></Phone>
+            </DCArtboard>
+            <DCArtboard id="dc" label="C · One-at-a-time / swipe" width={390} height={780}>
+              <Phone><DraftsC /></Phone>
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection
+            id="activity"
+            title="Agent activity"
+            subtitle="Live tail of agent_logs. Filter by agent · status · target · free text. Pause/resume. Three layouts of the same data."
+          >
+            <DCArtboard id="aa" label="A · Structured table" width={1280} height={760}>
+              <div className="desktop-shell"><ActivityA /></div>
+            </DCArtboard>
+            <DCArtboard id="ab" label="B · Terminal tail + sidebar" width={1280} height={760}>
+              <div className="desktop-shell"><ActivityB /></div>
+            </DCArtboard>
+            <DCArtboard id="ac" label="C · Grouped by target / run" width={1280} height={760}>
+              <div className="desktop-shell"><ActivityC /></div>
+            </DCArtboard>
+          </DCSection>
+        </DesignCanvas>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
